@@ -56,7 +56,7 @@ export function createAgent(def: AgentDef) {
         kind: "message",
         messageId: uuidv4(),
         role: "agent",
-        parts: [{ kind: "text", text: `${def.emoji} Salut, je suis **${def.name}** ! J'ai bien reçu ta tâche.` }],
+        parts: [{ kind: "text", text: `${def.emoji} **${def.name}** here!\n\nI received: "${text.slice(0, 200)}${text.length > 200 ? '...' : ''}"\n\nMy take as a ${def.description.toLowerCase()}: This is interesting. I'd ${def.skill === 'brainstorm' ? 'explore bold new angles' : def.skill === 'validate' ? 'check if this is actually buildable' : 'look for what could go wrong'} and pass my findings to the next agent.` }],
         contextId: ctx.contextId,
       };
 

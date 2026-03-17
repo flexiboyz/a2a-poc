@@ -129,6 +129,7 @@ app.get("/api/runs/:id/stream", (req, res) => {
 
 async function executePipeline(runId: string, agentNames: string[], input: string) {
   const factory = new ClientFactory();
+  let previousOutput = ""; // Chain: each agent receives previous output
 
   for (let i = 0; i < agentNames.length; i++) {
     const agentName = agentNames[i];
@@ -139,13 +140,18 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
     db.prepare("UPDATE run_steps SET status = 'running', started_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(runId, i);
     broadcast(runId, { type: "step-started", agent: agentName, step: i, emoji: agentDef.emoji });
 
+    // Build chained prompt
+    const chainedInput = previousOutput
+      ? `## Original Topic\n${input}\n\n## Previous Agent Output\n${previousOutput}\n\n## Your Task\nBuild on the previous agent's work. You are step ${i + 1}/${agentNames.length}.`
+      : `## Topic\n${input}\n\nYou are the first agent in the pipeline (step 1/${agentNames.length}).`;
+
     // Discover & call agent via A2A
     const client = await factory.createFromUrl(`http://localhost:${agentDef.port}`);
     const response = await client.sendMessage({
       message: {
         messageId: uuidv4(),
         role: "user",
-        parts: [{ kind: "text", text: `[Step ${i + 1}/${agentNames.length}] ${input}` }],
+        parts: [{ kind: "text", text: chainedInput }],
         kind: "message",
       },
     });
@@ -153,6 +159,7 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
     // Extract response text
     const msg = response as Message;
     const output = msg.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") ?? "(no output)";
+    previousOutput = output; // Pass to next agent
 
     // Update step → completed
     db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(output, runId, i);
