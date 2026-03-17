@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A2A Pipeline Builder</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+    h1 {
+      font-size: 1.8rem;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(135deg, #7c3aed, #ec4899);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle { color: #666; margin-bottom: 2rem; font-size: 0.9rem; }
+
+    .layout { display: grid; grid-template-columns: 240px 1fr; gap: 2rem; }
+
+    /* ── Agent Palette ─────────────────────────── */
+    .palette {
+      background: #12121a;
+      border-radius: 12px;
+      padding: 1.2rem;
+      border: 1px solid #1e1e2e;
+    }
+    .palette h2 { font-size: 0.85rem; text-transform: uppercase; color: #666; letter-spacing: 0.1em; margin-bottom: 1rem; }
+    .agent-card {
+      background: #1a1a2e;
+      border: 1px solid #2a2a3e;
+      border-radius: 10px;
+      padding: 1rem;
+      margin-bottom: 0.8rem;
+      cursor: grab;
+      transition: all 0.2s;
+      user-select: none;
+    }
+    .agent-card:hover { border-color: #7c3aed; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(124,58,237,0.2); }
+    .agent-card:active { cursor: grabbing; }
+    .agent-card .emoji { font-size: 1.5rem; }
+    .agent-card .name { font-weight: 600; margin-top: 0.3rem; }
+    .agent-card .desc { font-size: 0.75rem; color: #888; margin-top: 0.2rem; }
+    .agent-card .skill { font-size: 0.65rem; color: #7c3aed; margin-top: 0.3rem; padding: 2px 8px; background: rgba(124,58,237,0.1); border-radius: 4px; display: inline-block; }
+    .agent-card.dragging { opacity: 0.4; }
+
+    /* ── Main Area ─────────────────────────────── */
+    .main { display: flex; flex-direction: column; gap: 1.5rem; }
+
+    /* ── Pipeline Drop Zone ────────────────────── */
+    .pipeline-zone {
+      background: #12121a;
+      border: 2px dashed #2a2a3e;
+      border-radius: 12px;
+      padding: 1.5rem;
+      min-height: 120px;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      transition: all 0.2s;
+    }
+    .pipeline-zone.drag-over { border-color: #7c3aed; background: rgba(124,58,237,0.05); }
+    .pipeline-zone.empty::after {
+      content: 'Drag agents here to build your pipeline →';
+      color: #444;
+      font-size: 0.9rem;
+      margin: auto;
+    }
+
+    .pipeline-chip {
+      background: #1a1a2e;
+      border: 1px solid #2a2a3e;
+      border-radius: 8px;
+      padding: 0.6rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: grab;
+      position: relative;
+      transition: all 0.15s;
+    }
+    .pipeline-chip:hover { border-color: #ec4899; }
+    .pipeline-chip .remove {
+      position: absolute;
+      top: -6px;
+      right: -6px;
+      width: 18px;
+      height: 18px;
+      background: #ef4444;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .pipeline-chip:hover .remove { opacity: 1; }
+
+    .arrow { color: #444; font-size: 1.2rem; }
+
+    /* ── Controls ──────────────────────────────── */
+    .controls { display: flex; gap: 1rem; align-items: center; }
+    .btn {
+      padding: 0.7rem 1.5rem;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-run {
+      background: linear-gradient(135deg, #7c3aed, #ec4899);
+      color: white;
+    }
+    .btn-run:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(124,58,237,0.4); }
+    .btn-run:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+    .btn-clear { background: #1e1e2e; color: #888; }
+    .btn-clear:hover { background: #2a2a3e; color: #e0e0e0; }
+    .input-field {
+      flex: 1;
+      background: #1a1a2e;
+      border: 1px solid #2a2a3e;
+      border-radius: 8px;
+      padding: 0.7rem 1rem;
+      color: #e0e0e0;
+      font-size: 0.9rem;
+      outline: none;
+    }
+    .input-field:focus { border-color: #7c3aed; }
+
+    /* ── Output ────────────────────────────────── */
+    .output {
+      background: #12121a;
+      border: 1px solid #1e1e2e;
+      border-radius: 12px;
+      padding: 1.5rem;
+      flex: 1;
+      min-height: 200px;
+    }
+    .output h2 { font-size: 0.85rem; text-transform: uppercase; color: #666; letter-spacing: 0.1em; margin-bottom: 1rem; }
+    .output-empty { color: #333; font-style: italic; }
+
+    .step-result {
+      background: #1a1a2e;
+      border: 1px solid #2a2a3e;
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 0.8rem;
+      animation: slideIn 0.3s ease;
+    }
+    .step-result.running { border-color: #7c3aed; }
+    .step-result.completed { border-color: #22c55e; }
+    .step-result .step-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+    .step-result .step-header .badge {
+      font-size: 0.65rem;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .badge-running { background: rgba(124,58,237,0.2); color: #7c3aed; }
+    .badge-completed { background: rgba(34,197,94,0.2); color: #22c55e; }
+    .badge-pending { background: rgba(102,102,102,0.2); color: #666; }
+    .step-result .step-output { font-size: 0.85rem; color: #aaa; white-space: pre-wrap; }
+
+    .pipeline-done {
+      text-align: center;
+      padding: 1rem;
+      color: #22c55e;
+      font-weight: 600;
+      animation: slideIn 0.3s ease;
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid #7c3aed;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <h1>⚡ A2A Pipeline Builder</h1>
+  <p class="subtitle">Drag & drop agents to compose a pipeline, then run it.</p>
+
+  <div class="layout">
+    <!-- Palette -->
+    <div class="palette">
+      <h2>🤖 Agents</h2>
+      <div id="agents"></div>
+    </div>
+
+    <!-- Main -->
+    <div class="main">
+      <!-- Drop zone -->
+      <div id="pipeline" class="pipeline-zone empty"></div>
+
+      <!-- Controls -->
+      <div class="controls">
+        <input id="input" class="input-field" placeholder="Enter a topic for the pipeline..." value="Should we use A2A for multi-agent orchestration?">
+        <button id="btn-run" class="btn btn-run" disabled>▶ Run</button>
+        <button id="btn-clear" class="btn btn-clear">✕ Clear</button>
+      </div>
+
+      <!-- Output -->
+      <div class="output">
+        <h2>📡 Pipeline Output</h2>
+        <div id="output"><p class="output-empty">Build a pipeline and hit Run to see results here.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const pipelineEl = document.getElementById('pipeline');
+    const agentsEl = document.getElementById('agents');
+    const outputEl = document.getElementById('output');
+    const inputEl = document.getElementById('input');
+    const btnRun = document.getElementById('btn-run');
+    const btnClear = document.getElementById('btn-clear');
+
+    let pipeline = []; // { name, emoji }[]
+    let agents = [];
+
+    // ── Load agents ──────────────────────────────────────────────
+
+    fetch('/api/agents')
+      .then(r => r.json())
+      .then(data => {
+        agents = data;
+        renderAgents();
+      });
+
+    function renderAgents() {
+      agentsEl.innerHTML = agents.map(a => `
+        <div class="agent-card" draggable="true" data-agent="${a.name}" data-emoji="${a.emoji}">
+          <div class="emoji">${a.emoji}</div>
+          <div class="name">${a.name}</div>
+          <div class="desc">${a.description}</div>
+          <div class="skill">${a.skill}</div>
+        </div>
+      `).join('');
+
+      // Drag events
+      document.querySelectorAll('.agent-card').forEach(card => {
+        card.addEventListener('dragstart', (e) => {
+          e.dataTransfer.setData('agent', card.dataset.agent);
+          e.dataTransfer.setData('emoji', card.dataset.emoji);
+          card.classList.add('dragging');
+        });
+        card.addEventListener('dragend', () => card.classList.remove('dragging'));
+      });
+    }
+
+    // ── Pipeline drop zone ───────────────────────────────────────
+
+    pipelineEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      pipelineEl.classList.add('drag-over');
+    });
+    pipelineEl.addEventListener('dragleave', () => pipelineEl.classList.remove('drag-over'));
+    pipelineEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      pipelineEl.classList.remove('drag-over');
+      const name = e.dataTransfer.getData('agent');
+      const emoji = e.dataTransfer.getData('emoji');
+      if (name) {
+        pipeline.push({ name, emoji });
+        renderPipeline();
+      }
+    });
+
+    function renderPipeline() {
+      if (pipeline.length === 0) {
+        pipelineEl.innerHTML = '';
+        pipelineEl.classList.add('empty');
+        btnRun.disabled = true;
+        return;
+      }
+      pipelineEl.classList.remove('empty');
+      btnRun.disabled = false;
+
+      pipelineEl.innerHTML = pipeline.map((a, i) => `
+        ${i > 0 ? '<span class="arrow">→</span>' : ''}
+        <div class="pipeline-chip" draggable="true" data-index="${i}">
+          <span>${a.emoji}</span>
+          <span>${a.name}</span>
+          <div class="remove" onclick="removeStep(${i})">✕</div>
+        </div>
+      `).join('');
+
+      // Enable reorder via drag within pipeline
+      const chips = pipelineEl.querySelectorAll('.pipeline-chip');
+      chips.forEach(chip => {
+        chip.addEventListener('dragstart', (e) => {
+          e.dataTransfer.setData('reorder', chip.dataset.index);
+        });
+      });
+    }
+
+    window.removeStep = (i) => {
+      pipeline.splice(i, 1);
+      renderPipeline();
+    };
+
+    btnClear.addEventListener('click', () => {
+      pipeline = [];
+      renderPipeline();
+      outputEl.innerHTML = '<p class="output-empty">Build a pipeline and hit Run to see results here.</p>';
+    });
+
+    // ── Run Pipeline ─────────────────────────────────────────────
+
+    btnRun.addEventListener('click', async () => {
+      if (pipeline.length === 0) return;
+      btnRun.disabled = true;
+      outputEl.innerHTML = '';
+
+      // Create pipeline
+      const pRes = await fetch('/api/pipelines', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Quick Run', agents: pipeline.map(a => a.name) }),
+      });
+      const { id: pipelineId } = await pRes.json();
+
+      // Show pending steps
+      pipeline.forEach((a, i) => {
+        outputEl.innerHTML += `
+          <div class="step-result" id="step-${i}">
+            <div class="step-header">
+              <span>${a.emoji}</span>
+              <strong>${a.name}</strong>
+              <span class="badge badge-pending">pending</span>
+            </div>
+            <div class="step-output" style="color: #444;">Waiting...</div>
+          </div>`;
+      });
+
+      // Run
+      const rRes = await fetch(`/api/pipelines/${pipelineId}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: inputEl.value }),
+      });
+      const { runId } = await rRes.json();
+
+      // SSE
+      const evtSource = new EventSource(`/api/runs/${runId}/stream`);
+      evtSource.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+
+        if (data.type === 'step-started') {
+          const el = document.getElementById(`step-${data.step}`);
+          if (el) {
+            el.classList.add('running');
+            el.querySelector('.badge').className = 'badge badge-running';
+            el.querySelector('.badge').textContent = 'running';
+            el.querySelector('.step-output').innerHTML = '<span class="spinner"></span> Working...';
+          }
+        }
+
+        if (data.type === 'step-completed') {
+          const el = document.getElementById(`step-${data.step}`);
+          if (el) {
+            el.classList.remove('running');
+            el.classList.add('completed');
+            el.querySelector('.badge').className = 'badge badge-completed';
+            el.querySelector('.badge').textContent = 'completed';
+            el.querySelector('.step-output').textContent = data.output;
+          }
+        }
+
+        if (data.type === 'pipeline-completed') {
+          outputEl.innerHTML += '<div class="pipeline-done">✅ Pipeline completed!</div>';
+          evtSource.close();
+          btnRun.disabled = false;
+        }
+
+        if (data.type === 'pipeline-failed') {
+          outputEl.innerHTML += `<div class="pipeline-done" style="color:#ef4444;">❌ Pipeline failed: ${data.error}</div>`;
+          evtSource.close();
+          btnRun.disabled = false;
+        }
+      };
+    });
+  </script>
+</body>
+</html>
