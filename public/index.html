@@ -203,7 +203,7 @@
 </head>
 <body>
   <h1>⚡ A2A Pipeline Builder</h1>
-  <p class="subtitle">Drag & drop agents to compose a pipeline, then run it.</p>
+  <p class="subtitle">Click agents to add them to your pipeline, then run it.</p>
 
   <div class="layout">
     <!-- Palette -->
@@ -262,8 +262,13 @@
         </div>
       `).join('');
 
-      // Drag events
+      // Click to add (works on all devices)
       document.querySelectorAll('.agent-card').forEach(card => {
+        card.addEventListener('click', () => {
+          pipeline.push({ name: card.dataset.agent, emoji: card.dataset.emoji });
+          renderPipeline();
+        });
+        // Drag events (desktop bonus)
         card.addEventListener('dragstart', (e) => {
           e.dataTransfer.setData('agent', card.dataset.agent);
           e.dataTransfer.setData('emoji', card.dataset.emoji);
