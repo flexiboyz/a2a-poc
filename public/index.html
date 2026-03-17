@@ -242,10 +242,10 @@
 
     let pipeline = []; // { name, emoji }[]
     let agents = [];
+    const basePath = window.location.pathname.replace(/\/$/, '');
 
     // ── Load agents ──────────────────────────────────────────────
-
-    fetch('/api/agents')
+    fetch(basePath + '/api/agents')
       .then(r => r.json())
       .then(data => {
         agents = data;
@@ -343,7 +343,7 @@
       outputEl.innerHTML = '';
 
       // Create pipeline
-      const pRes = await fetch('/api/pipelines', {
+      const pRes = await fetch(basePath + '/api/pipelines', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'Quick Run', agents: pipeline.map(a => a.name) }),
@@ -364,7 +364,7 @@
       });
 
       // Run
-      const rRes = await fetch(`/api/pipelines/${pipelineId}/run`, {
+      const rRes = await fetch(`${basePath}/api/pipelines/${pipelineId}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ input: inputEl.value }),
@@ -372,7 +372,7 @@
       const { runId } = await rRes.json();
 
       // SSE
-      const evtSource = new EventSource(`/api/runs/${runId}/stream`);
+      const evtSource = new EventSource(`${basePath}/api/runs/${runId}/stream`);
       evtSource.onmessage = (e) => {
         const data = JSON.parse(e.data);
 
