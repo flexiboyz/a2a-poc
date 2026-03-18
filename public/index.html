@@ -560,21 +560,16 @@
         if (data.type === 'pipeline-rerun') {
           outputEl.innerHTML += `<div class="pipeline-done" style="color:#fbbf24;">🔁 Re-running pipeline...</div>`;
           evtSource.close();
-          // Connect to new run's SSE
           const newRunId = data.newRunId;
-          // Re-render steps as pending
-          const chips = document.querySelectorAll('.pipeline-chip');
-          const agentList = [];
-          chips.forEach(c => agentList.push(c.querySelector('span:last-child')?.textContent));
 
+          // Use the pipeline array we already have in memory
           outputEl.innerHTML = '';
-          agentList.forEach((name, i) => {
-            const a = agents.find(x => x.name === name);
+          pipeline.forEach((a, i) => {
             outputEl.innerHTML += `
               <div class="step-result" id="step-${i}">
                 <div class="step-header">
-                  <span>${a?.emoji || '❓'}</span>
-                  <strong>${name}</strong>
+                  <span>${a.emoji}</span>
+                  <strong>${a.name}</strong>
                   <span class="badge badge-pending">pending</span>
                 </div>
                 <div class="step-output" style="color: #444;">Waiting...</div>
