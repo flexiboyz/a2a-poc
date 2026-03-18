@@ -176,6 +176,7 @@
     .badge-pending { background: rgba(102,102,102,0.2); color: #666; }
     .badge-input-required { background: rgba(251,191,36,0.2); color: #fbbf24; }
     .badge-resumed { background: rgba(124,58,237,0.2); color: #7c3aed; }
+    .badge-branched { background: rgba(124,58,237,0.2); color: #7c3aed; }
     .badge-failed { background: rgba(239,68,68,0.2); color: #ef4444; }
     .badge-canceled { background: rgba(102,102,102,0.2); color: #666; }
     .step-result.failed { border-color: #ef4444; }
@@ -542,6 +543,38 @@
             el.querySelector('.badge').className = 'badge badge-canceled';
             el.querySelector('.badge').textContent = 'canceled';
             el.querySelector('.step-output').textContent = 'Skipped — previous agent failed';
+          }
+        }
+
+        if (data.type === 'pipeline-branched') {
+          // Inject new step cards for the branch agents
+          const insertAfter = document.getElementById(`step-${data.step}`);
+          if (insertAfter) {
+            // Add branch indicator
+            const branchDiv = document.createElement('div');
+            branchDiv.className = 'pipeline-done';
+            branchDiv.style.color = '#7c3aed';
+            branchDiv.innerHTML = `🔀 Branch ${data.choice}: <strong>${data.label}</strong>`;
+            insertAfter.after(branchDiv);
+
+            // Add step cards for injected agents
+            let lastEl = branchDiv;
+            data.injectedAgents.forEach((a, j) => {
+              const stepIdx = data.step + 1 + j;
+              const div = document.createElement('div');
+              div.className = 'step-result';
+              div.id = `step-${stepIdx}`;
+              div.innerHTML = `
+                <div class="step-header">
+                  <span>${a.emoji}</span>
+                  <strong>${a.name}</strong>
+                  <span class="badge badge-pending">pending</span>
+                </div>
+                <div class="step-output" style="color: #444;">Waiting...</div>`;
+              div.style.animation = 'slideIn 0.3s ease';
+              lastEl.after(div);
+              lastEl = div;
+            });
           }
         }
 

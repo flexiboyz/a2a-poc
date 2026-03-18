@@ -31,6 +31,12 @@ export interface AgentDef {
   alwaysFails?: boolean | number;
   /** If true, this agent asks whether to re-run the pipeline */
   askRerun?: boolean;
+  /** Branch config — agent asks user to choose, orchestrator routes accordingly */
+  branches?: {
+    question: string;
+    a: { label: string; agents: string[] };
+    b: { label: string; agents: string[] };
+  };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -139,6 +145,36 @@ export function createAgentRouter(def: AgentDef, baseUrl: string): Router {
               parts: [{
                 kind: "text",
                 text: `${def.emoji} **${def.name}** needs your input!\n\nI've analyzed the topic and found something that needs your decision before I can proceed.\n\n**Question:** Should I take the bold approach or the safe approach? Reply with your choice.`,
+              }],
+              contextId: ctx.contextId,
+            },
+            timestamp: new Date().toISOString(),
+          },
+          history: [],
+        };
+
+        bus.publish(task);
+        bus.finished();
+        return;
+      }
+
+      // If this is a branching agent, ask user to choose a path
+      if (def.branches) {
+        console.log(`[${def.emoji} ${def.name}] → asking user to choose branch`);
+
+        const task: Task = {
+          kind: "task",
+          id: ctx.taskId,
+          contextId: ctx.contextId,
+          status: {
+            state: "input-required",
+            message: {
+              kind: "message",
+              messageId: uuidv4(),
+              role: "agent",
+              parts: [{
+                kind: "text",
+                text: `${def.emoji} **${def.name}** — Decision point!\n\n${def.branches.question}\n\n**A:** ${def.branches.a.label} → [${def.branches.a.agents.join(" → ")}]\n**B:** ${def.branches.b.label} → [${def.branches.b.agents.join(" → ")}]\n\nReply **A** or **B** to choose your path.`,
               }],
               contextId: ctx.contextId,
             },

@@ -30,6 +30,11 @@ const AGENTS: AgentDef[] = [
   { name: "Ghost", emoji: "👻", skill: "critique", description: "Silent critic — finds hidden flaws" },
   { name: "Glitch", emoji: "💀", skill: "chaos", description: "Chaos agent — 50% chance of failure", alwaysFails: 0.5 },
   { name: "Loop", emoji: "🔁", skill: "rerun", description: "Checkpoint — asks to re-run the pipeline", askRerun: true },
+  { name: "Fork", emoji: "🔀", skill: "branch", description: "Decision point — routes to different agents", branches: {
+    question: "Which approach do you want for this topic?",
+    a: { label: "Creative deep-dive", agents: ["Spark", "Ghost"] },
+    b: { label: "Pragmatic validation", agents: ["Flint", "Glitch"] },
+  }},
 ];
 
 // ── Single Express App ─────────────────────────────────────────────────────
@@ -271,6 +276,50 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
       console.log(`[orchestrator] Resuming ${agentName} with user reply`);
       db.prepare("UPDATE run_steps SET status = 'running' WHERE run_id = ? AND step_order = ?").run(runId, i);
       broadcast(runId, { type: "step-resumed", agent: agentName, step: i, emoji: agentDef.emoji });
+
+      // Check if this is a branching agent — inject branch agents into pipeline
+      if (agentDef.branches) {
+        const choice = userReply.trim().toLowerCase().startsWith("b") ? "b" : "a";
+        const branch = agentDef.branches[choice];
+        console.log(`[orchestrator] Fork: user chose ${choice.toUpperCase()} → ${branch.label} [${branch.agents.join(" → ")}]`);
+
+        // Mark Fork step as completed with the choice
+        output = `🔀 Branch ${choice.toUpperCase()}: ${branch.label} → [${branch.agents.join(" → ")}]`;
+        db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(output, runId, i);
+        broadcast(runId, { type: "step-completed", agent: agentName, step: i, emoji: agentDef.emoji, output });
+
+        // Inject branch agents into the pipeline (after current position)
+        const branchAgents = branch.agents;
+        const remaining = agentNames.slice(i + 1);
+        agentNames.splice(i + 1, remaining.length, ...branchAgents, ...remaining);
+
+        // Create DB steps for the injected agents
+        for (let j = 0; j < branchAgents.length; j++) {
+          const stepOrder = i + 1 + j;
+          db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')").run(uuidv4(), runId, branchAgents[j], stepOrder);
+        }
+        // Re-number remaining steps
+        for (let j = 0; j < remaining.length; j++) {
+          const oldOrder = i + 1 + j;
+          const newOrder = i + 1 + branchAgents.length + j;
+          db.prepare("UPDATE run_steps SET step_order = ? WHERE run_id = ? AND agent_name = ? AND step_order = ?").run(newOrder, runId, remaining[j], oldOrder);
+        }
+
+        // Broadcast new steps so UI can render them
+        broadcast(runId, {
+          type: "pipeline-branched",
+          choice: choice.toUpperCase(),
+          label: branch.label,
+          injectedAgents: branchAgents.map(name => {
+            const def = AGENTS.find(a => a.name === name);
+            return { name, emoji: def?.emoji || "❓" };
+          }),
+          step: i,
+        });
+
+        previousOutput = output;
+        continue; // Skip the normal completion — we already handled it
+      }
 
       const resumeResponse = await client.sendMessage({
         message: {
