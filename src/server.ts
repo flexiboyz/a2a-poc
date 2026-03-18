@@ -317,6 +317,9 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
           step: i,
         });
 
+        // Small delay to ensure the UI receives the branch event before step events
+        await new Promise(r => setTimeout(r, 200));
+
         previousOutput = output;
         continue; // Skip the normal completion — we already handled it
       }
