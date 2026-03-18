@@ -547,9 +547,23 @@
         }
 
         if (data.type === 'pipeline-branched') {
-          // Inject new step cards for the branch agents
           const insertAfter = document.getElementById(`step-${data.step}`);
           if (insertAfter) {
+            const branchCount = data.injectedAgents.length;
+
+            // First: re-number all steps AFTER the fork point (shift them forward)
+            // Go in reverse to avoid ID collisions
+            const allSteps = outputEl.querySelectorAll('.step-result');
+            const toRenumber = [];
+            allSteps.forEach(el => {
+              const idx = parseInt(el.id.replace('step-', ''));
+              if (idx > data.step) toRenumber.push({ el, oldIdx: idx });
+            });
+            toRenumber.sort((a, b) => b.oldIdx - a.oldIdx); // reverse order
+            toRenumber.forEach(({ el, oldIdx }) => {
+              el.id = `step-${oldIdx + branchCount}`;
+            });
+
             // Add branch indicator
             const branchDiv = document.createElement('div');
             branchDiv.className = 'pipeline-done';
