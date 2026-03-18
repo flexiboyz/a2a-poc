@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>A2A Pipeline Builder</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: #0a0a0f;
@@ -174,7 +174,15 @@
     .badge-running { background: rgba(124,58,237,0.2); color: #7c3aed; }
     .badge-completed { background: rgba(34,197,94,0.2); color: #22c55e; }
     .badge-pending { background: rgba(102,102,102,0.2); color: #666; }
-    .step-result .step-output { font-size: 0.85rem; color: #aaa; white-space: pre-wrap; }
+    .badge-input-required { background: rgba(251,191,36,0.2); color: #fbbf24; }
+    .badge-resumed { background: rgba(124,58,237,0.2); color: #7c3aed; }
+    .badge-branched { background: rgba(124,58,237,0.2); color: #7c3aed; }
+    .badge-failed { background: rgba(239,68,68,0.2); color: #ef4444; }
+    .badge-canceled { background: rgba(102,102,102,0.2); color: #666; }
+    .step-result.failed { border-color: #ef4444; }
+    .step-result.canceled { opacity: 0.4; }
+    .step-result .step-output { font-size: 0.85rem; color: #aaa; white-space: pre-wrap; user-select: text; }
+    .input-prompt input { user-select: text; }
 
     .pipeline-done {
       text-align: center;
@@ -183,6 +191,40 @@
       font-weight: 600;
       animation: slideIn 0.3s ease;
     }
+
+    /* Input required prompt */
+    .input-prompt {
+      margin-top: 0.8rem;
+      padding: 1rem;
+      background: rgba(251,191,36,0.08);
+      border: 1px solid rgba(251,191,36,0.3);
+      border-radius: 8px;
+      animation: slideIn 0.3s ease;
+    }
+    .input-prompt p { color: #fbbf24; font-size: 0.9rem; margin-bottom: 0.8rem; }
+    .input-prompt .input-row { display: flex; gap: 0.5rem; }
+    .input-prompt input {
+      flex: 1;
+      background: #1a1a2e;
+      border: 1px solid #2a2a3e;
+      border-radius: 6px;
+      padding: 0.5rem 0.8rem;
+      color: #e0e0e0;
+      font-size: 0.85rem;
+      outline: none;
+    }
+    .input-prompt input:focus { border-color: #fbbf24; }
+    .input-prompt button {
+      background: #fbbf24;
+      color: #0a0a0f;
+      border: none;
+      border-radius: 6px;
+      padding: 0.5rem 1.2rem;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .input-prompt button:hover { background: #f59e0b; }
 
     @keyframes slideIn {
       from { opacity: 0; transform: translateY(10px); }
@@ -221,6 +263,7 @@
       <div class="controls">
         <input id="input" class="input-field" placeholder="Enter a topic for the pipeline..." value="Should we use A2A for multi-agent orchestration?">
         <button id="btn-run" class="btn btn-run" disabled>▶ Run</button>
+        <button id="btn-random" class="btn btn-run" style="background: linear-gradient(135deg, #f59e0b, #ef4444);">🎲 Random</button>
         <button id="btn-clear" class="btn btn-clear">✕ Clear</button>
       </div>
 
@@ -324,10 +367,60 @@
       });
     }
 
+    window.sendReply = async (runId) => {
+      const input = document.getElementById('user-reply');
+      if (!input || !input.value.trim()) return;
+      const reply = input.value.trim();
+      input.disabled = true;
+      input.parentElement.querySelector('button').disabled = true;
+      await fetch(`${basePath}/api/runs/${runId}/reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reply }),
+      });
+    };
+
     window.removeStep = (i) => {
       pipeline.splice(i, 1);
       renderPipeline();
     };
+
+    // ── Random Pipeline ──────────────────────────────────────────
+    document.getElementById('btn-random').addEventListener('click', async () => {
+      outputEl.innerHTML = '<p class="output-empty"><span class="spinner"></span> Launching random pipeline...</p>';
+      const rRes = await fetch(`${basePath}/api/random-run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: inputEl.value }),
+      });
+      const { runId, agents: pickedAgents } = await rRes.json();
+
+      // Update pipeline zone to show what was picked
+      pipeline = pickedAgents.map(name => {
+        const a = agents.find(x => x.name === name);
+        return { name, emoji: a?.emoji || '❓' };
+      });
+      renderPipeline();
+
+      // Show pending steps
+      outputEl.innerHTML = '';
+      pickedAgents.forEach((name, i) => {
+        const a = agents.find(x => x.name === name);
+        outputEl.innerHTML += `
+          <div class="step-result" id="step-${i}">
+            <div class="step-header">
+              <span>${a?.emoji || '❓'}</span>
+              <strong>${name}</strong>
+              <span class="badge badge-pending">pending</span>
+            </div>
+            <div class="step-output" style="color: #444;">Waiting...</div>
+          </div>`;
+      });
+
+      // SSE
+      const evtSource = new EventSource(`${basePath}/api/runs/${runId}/stream`);
+      setupSSE(evtSource, runId);
+    });
 
     btnClear.addEventListener('click', () => {
       pipeline = [];
@@ -373,6 +466,10 @@
 
       // SSE
       const evtSource = new EventSource(`${basePath}/api/runs/${runId}/stream`);
+      setupSSE(evtSource, runId);
+    });
+
+    function setupSSE(evtSource, runId) {
       evtSource.onmessage = (e) => {
         const data = JSON.parse(e.data);
 
@@ -383,6 +480,37 @@
             el.querySelector('.badge').className = 'badge badge-running';
             el.querySelector('.badge').textContent = 'running';
             el.querySelector('.step-output').innerHTML = '<span class="spinner"></span> Working...';
+          }
+        }
+
+        if (data.type === 'step-input-required') {
+          const el = document.getElementById(`step-${data.step}`);
+          if (el) {
+            el.classList.remove('running');
+            el.querySelector('.badge').className = 'badge badge-input-required';
+            el.querySelector('.badge').textContent = 'input required';
+            el.querySelector('.step-output').innerHTML = data.question +
+              `<div class="input-prompt">
+                <p>⏸️ Agent is waiting for your input:</p>
+                <div class="input-row">
+                  <input id="user-reply" placeholder="Type your reply..." autofocus>
+                  <button onclick="sendReply('${runId}')">Send →</button>
+                </div>
+              </div>`;
+            document.getElementById('user-reply')?.focus();
+          }
+        }
+
+        if (data.type === 'step-resumed') {
+          const el = document.getElementById(`step-${data.step}`);
+          if (el) {
+            el.classList.add('running');
+            el.querySelector('.badge').className = 'badge badge-running';
+            el.querySelector('.badge').textContent = 'resuming';
+            // Remove the input prompt, show spinner
+            const prompt = el.querySelector('.input-prompt');
+            if (prompt) prompt.remove();
+            el.querySelector('.step-output').innerHTML += '<br><span class="spinner"></span> Resuming with your input...';
           }
         }
 
@@ -397,6 +525,73 @@
           }
         }
 
+        if (data.type === 'step-failed') {
+          const el = document.getElementById(`step-${data.step}`);
+          if (el) {
+            el.classList.remove('running');
+            el.classList.add('failed');
+            el.querySelector('.badge').className = 'badge badge-failed';
+            el.querySelector('.badge').textContent = 'failed';
+            el.querySelector('.step-output').textContent = data.output;
+          }
+        }
+
+        if (data.type === 'step-canceled') {
+          const el = document.getElementById(`step-${data.step}`);
+          if (el) {
+            el.classList.add('canceled');
+            el.querySelector('.badge').className = 'badge badge-canceled';
+            el.querySelector('.badge').textContent = 'canceled';
+            el.querySelector('.step-output').textContent = 'Skipped — previous agent failed';
+          }
+        }
+
+        if (data.type === 'pipeline-branched') {
+          const insertAfter = document.getElementById(`step-${data.step}`);
+          if (insertAfter) {
+            const branchCount = data.injectedAgents.length;
+
+            // First: re-number all steps AFTER the fork point (shift them forward)
+            // Go in reverse to avoid ID collisions
+            const allSteps = outputEl.querySelectorAll('.step-result');
+            const toRenumber = [];
+            allSteps.forEach(el => {
+              const idx = parseInt(el.id.replace('step-', ''));
+              if (idx > data.step) toRenumber.push({ el, oldIdx: idx });
+            });
+            toRenumber.sort((a, b) => b.oldIdx - a.oldIdx); // reverse order
+            toRenumber.forEach(({ el, oldIdx }) => {
+              el.id = `step-${oldIdx + branchCount}`;
+            });
+
+            // Add branch indicator
+            const branchDiv = document.createElement('div');
+            branchDiv.className = 'pipeline-done';
+            branchDiv.style.color = '#7c3aed';
+            branchDiv.innerHTML = `🔀 Branch ${data.choice}: <strong>${data.label}</strong>`;
+            insertAfter.after(branchDiv);
+
+            // Add step cards for injected agents
+            let lastEl = branchDiv;
+            data.injectedAgents.forEach((a, j) => {
+              const stepIdx = data.step + 1 + j;
+              const div = document.createElement('div');
+              div.className = 'step-result';
+              div.id = `step-${stepIdx}`;
+              div.innerHTML = `
+                <div class="step-header">
+                  <span>${a.emoji}</span>
+                  <strong>${a.name}</strong>
+                  <span class="badge badge-pending">pending</span>
+                </div>
+                <div class="step-output" style="color: #444;">Waiting...</div>`;
+              div.style.animation = 'slideIn 0.3s ease';
+              lastEl.after(div);
+              lastEl = div;
+            });
+          }
+        }
+
         if (data.type === 'pipeline-completed') {
           outputEl.innerHTML += '<div class="pipeline-done">✅ Pipeline completed!</div>';
           evtSource.close();
@@ -408,8 +603,31 @@
           evtSource.close();
           btnRun.disabled = false;
         }
+
+        if (data.type === 'pipeline-rerun') {
+          outputEl.innerHTML += `<div class="pipeline-done" style="color:#fbbf24;">🔁 Re-running pipeline...</div>`;
+          evtSource.close();
+          const newRunId = data.newRunId;
+
+          // Use the pipeline array we already have in memory
+          outputEl.innerHTML = '';
+          pipeline.forEach((a, i) => {
+            outputEl.innerHTML += `
+              <div class="step-result" id="step-${i}">
+                <div class="step-header">
+                  <span>${a.emoji}</span>
+                  <strong>${a.name}</strong>
+                  <span class="badge badge-pending">pending</span>
+                </div>
+                <div class="step-output" style="color: #444;">Waiting...</div>
+              </div>`;
+          });
+
+          const newSource = new EventSource(`${basePath}/api/runs/${newRunId}/stream`);
+          setupSSE(newSource, newRunId);
+        }
       };
-    });
+    }
   </script>
 </body>
 </html>
