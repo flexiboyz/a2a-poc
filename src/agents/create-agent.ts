@@ -1,8 +1,8 @@
 /**
- * Factory to create A2A agent servers — each agent just says hello
+ * Factory to create A2A agent routers — all agents share one Express server
  */
 
-import express from "express";
+import { Router } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { AgentCard, Message, AGENT_CARD_PATH } from "@a2a-js/sdk";
 import {
@@ -19,10 +19,9 @@ import {
   UserBuilder,
 } from "@a2a-js/sdk/server/express";
 
-interface AgentDef {
+export interface AgentDef {
   name: string;
   emoji: string;
-  port: number;
   skill: string;
   description: string;
 }
@@ -31,13 +30,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export function createAgent(def: AgentDef) {
+/**
+ * Creates an Express Router for a single A2A agent.
+ * Mount it on the main app: app.use("/spark", createAgentRouter(def, baseUrl))
+ */
+export function createAgentRouter(def: AgentDef, baseUrl: string): Router {
+  const slug = def.name.toLowerCase();
+
   const card: AgentCard = {
     name: def.name,
     description: def.description,
     protocolVersion: "0.3.0",
     version: "0.1.0",
-    url: `http://localhost:${def.port}/a2a/jsonrpc`,
+    url: `${baseUrl}/${slug}/a2a/jsonrpc`,
     skills: [{ id: def.skill, name: def.skill, description: def.description, tags: [def.skill] }],
     capabilities: { pushNotifications: false },
     defaultInputModes: ["text"],
@@ -47,7 +52,7 @@ export function createAgent(def: AgentDef) {
   class Executor implements AgentExecutor {
     async execute(ctx: RequestContext, bus: ExecutionEventBus): Promise<void> {
       const text = ctx.userMessage?.parts?.map((p: any) => ("text" in p ? p.text : "")).join(" ").trim() ?? "";
-      console.log(`[${def.emoji} ${def.name}] Received: "${text}"`);
+      console.log(`[${def.emoji} ${def.name}] Received: "${text.slice(0, 100)}${text.length > 100 ? "..." : ""}"`);
 
       // Simulate thinking
       await sleep(1000 + Math.random() * 2000);
@@ -56,7 +61,10 @@ export function createAgent(def: AgentDef) {
         kind: "message",
         messageId: uuidv4(),
         role: "agent",
-        parts: [{ kind: "text", text: `${def.emoji} **${def.name}** here!\n\nI received: "${text.slice(0, 200)}${text.length > 200 ? '...' : ''}"\n\nMy take as a ${def.description.toLowerCase()}: This is interesting. I'd ${def.skill === 'brainstorm' ? 'explore bold new angles' : def.skill === 'validate' ? 'check if this is actually buildable' : 'look for what could go wrong'} and pass my findings to the next agent.` }],
+        parts: [{
+          kind: "text",
+          text: `${def.emoji} **${def.name}** here!\n\nI received: "${text.slice(0, 200)}${text.length > 200 ? "..." : ""}"\n\nMy take as a ${def.description.toLowerCase()}: This is interesting. I'd ${def.skill === "brainstorm" ? "explore bold new angles" : def.skill === "validate" ? "check if this is actually buildable" : "look for what could go wrong"} and pass my findings to the next agent.`,
+        }],
         contextId: ctx.contextId,
       };
 
@@ -67,12 +75,12 @@ export function createAgent(def: AgentDef) {
     cancelTask = async () => {};
   }
 
-  const app = express();
   const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), new Executor());
+  const router = Router();
 
-  app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: handler }));
-  app.use("/a2a/jsonrpc", jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }));
-  app.use("/a2a/rest", restHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }));
+  router.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: handler }));
+  router.use("/a2a/jsonrpc", jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }));
+  router.use("/a2a/rest", restHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }));
 
-  return { app, card, def };
+  return router;
 }

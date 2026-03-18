@@ -1,37 +1,48 @@
 /**
- * A2A POC — Main server + 3 agents + orchestrator + UI
+ * A2A POC — Single Express server + 3 agents + orchestrator + UI
+ *
+ * All agents share one server on port 4000:
+ *   /spark/.well-known/agent-card.json   → Spark agent card
+ *   /spark/a2a/jsonrpc                   → Spark JSON-RPC
+ *   /flint/...                           → Flint
+ *   /ghost/...                           → Ghost
  */
 
 import express from "express";
 import { v4 as uuidv4 } from "uuid";
 import { resolve } from "path";
-import { createAgent } from "./agents/create-agent";
-import { ClientFactory } from "@a2a-js/sdk/client";
+import { createAgentRouter } from "./agents/create-agent";
+import type { AgentDef } from "./agents/create-agent";
+import { ClientFactory, A2AClient } from "@a2a-js/sdk/client";
 import type { Message } from "@a2a-js/sdk";
 import db from "./db";
 
+// ── Config ─────────────────────────────────────────────────────────────────
+
+const PORT = 4000;
+const BASE_URL = `http://localhost:${PORT}`;
+
 // ── Agent Definitions ──────────────────────────────────────────────────────
 
-const AGENTS = [
-  { name: "Spark", emoji: "✨", port: 4001, skill: "brainstorm", description: "Creative visionary — generates wild ideas" },
-  { name: "Flint", emoji: "🪨", port: 4002, skill: "validate", description: "Pragmatic builder — validates feasibility" },
-  { name: "Ghost", emoji: "👻", port: 4003, skill: "critique", description: "Silent critic — finds hidden flaws" },
+const AGENTS: AgentDef[] = [
+  { name: "Spark", emoji: "✨", skill: "brainstorm", description: "Creative visionary — generates wild ideas" },
+  { name: "Flint", emoji: "🪨", skill: "validate", description: "Pragmatic builder — validates feasibility" },
+  { name: "Ghost", emoji: "👻", skill: "critique", description: "Silent critic — finds hidden flaws" },
 ];
 
-// ── Start Agent Servers ────────────────────────────────────────────────────
-
-for (const def of AGENTS) {
-  const { app } = createAgent(def);
-  app.listen(def.port, () => {
-    console.log(`[${def.emoji}] ${def.name} agent on http://localhost:${def.port}`);
-  });
-}
-
-// ── Main Server (UI + API) ─────────────────────────────────────────────────
+// ── Single Express App ─────────────────────────────────────────────────────
 
 const app = express();
 app.use(express.json());
 app.use(express.static(resolve(__dirname, "../public")));
+
+// Mount each agent on its sub-path
+for (const def of AGENTS) {
+  const slug = def.name.toLowerCase();
+  const router = createAgentRouter(def, BASE_URL);
+  app.use(`/${slug}`, router);
+  console.log(`[🤖] Mounted ${def.emoji} ${def.name} → /${slug}/`);
+}
 
 // SSE clients for live updates
 const sseClients = new Map<string, express.Response[]>();
@@ -46,14 +57,16 @@ function broadcast(runId: string, data: any) {
 // ── API: List available agents ─────────────────────────────────────────────
 
 app.get("/api/agents", (_req, res) => {
-  res.json(AGENTS.map((a) => ({
-    name: a.name,
-    emoji: a.emoji,
-    port: a.port,
-    skill: a.skill,
-    description: a.description,
-    cardUrl: `http://localhost:${a.port}/.well-known/agent-card.json`,
-  })));
+  res.json(AGENTS.map((a) => {
+    const slug = a.name.toLowerCase();
+    return {
+      name: a.name,
+      emoji: a.emoji,
+      skill: a.skill,
+      description: a.description,
+      cardUrl: `${BASE_URL}/${slug}/.well-known/agent-card.json`,
+    };
+  }));
 });
 
 // ── API: Pipeline CRUD ─────────────────────────────────────────────────────
@@ -129,12 +142,14 @@ app.get("/api/runs/:id/stream", (req, res) => {
 
 async function executePipeline(runId: string, agentNames: string[], input: string) {
   const factory = new ClientFactory();
-  let previousOutput = ""; // Chain: each agent receives previous output
+  let previousOutput = "";
 
   for (let i = 0; i < agentNames.length; i++) {
     const agentName = agentNames[i];
     const agentDef = AGENTS.find((a) => a.name === agentName);
     if (!agentDef) throw new Error(`Unknown agent: ${agentName}`);
+
+    const slug = agentName.toLowerCase();
 
     // Update step → running
     db.prepare("UPDATE run_steps SET status = 'running', started_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(runId, i);
@@ -145,8 +160,9 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
       ? `## Original Topic\n${input}\n\n## Previous Agent Output\n${previousOutput}\n\n## Your Task\nBuild on the previous agent's work. You are step ${i + 1}/${agentNames.length}.`
       : `## Topic\n${input}\n\nYou are the first agent in the pipeline (step 1/${agentNames.length}).`;
 
-    // Discover & call agent via A2A
-    const client = await factory.createFromUrl(`http://localhost:${agentDef.port}`);
+    // Discover & call agent via A2A — same server, sub-path
+    const cardUrl = `${BASE_URL}/${slug}/.well-known/agent-card.json`;
+    const client = await A2AClient.fromCardUrl(cardUrl);
     const response = await client.sendMessage({
       message: {
         messageId: uuidv4(),
@@ -156,10 +172,10 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
       },
     });
 
-    // Extract response text
-    const msg = response as Message;
-    const output = msg.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") ?? "(no output)";
-    previousOutput = output; // Pass to next agent
+    // Extract response text — SDK wraps in JSON-RPC envelope
+    const result = (response as any).result ?? response;
+    const output = result.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "(no output)";
+    previousOutput = output;
 
     // Update step → completed
     db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(output, runId, i);
@@ -173,8 +189,13 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
 
 // ── Start ──────────────────────────────────────────────────────────────────
 
-const PORT = 4000;
 app.listen(PORT, () => {
-  console.log(`\n[🚀] Pipeline Builder UI: http://localhost:${PORT}`);
-  console.log(`[🚀] Caddy: http://rockeros.rockerone.io/a2a-poc/\n`);
+  console.log(`\n[🚀] A2A Pipeline Builder: http://localhost:${PORT}`);
+  console.log(`[🚀] Caddy: http://rockeros.rockerone.io/a2a-poc/`);
+  console.log(`\n[📋] Agent Cards:`);
+  for (const a of AGENTS) {
+    const slug = a.name.toLowerCase();
+    console.log(`     ${a.emoji} ${a.name}: ${BASE_URL}/${slug}/.well-known/agent-card.json`);
+  }
+  console.log();
 });
