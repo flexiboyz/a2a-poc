@@ -13,6 +13,7 @@ import { v4 as uuidv4 } from "uuid";
 import { resolve } from "path";
 import { createAgentRouter } from "./agents/create-agent";
 import type { AgentDef } from "./agents/create-agent";
+import { createCipherRouter } from "./agents/cipher";
 import { A2AClient } from "@a2a-js/sdk/client";
 import type { Message, Task } from "@a2a-js/sdk";
 import db from "./db";
@@ -50,6 +51,10 @@ for (const def of AGENTS) {
   app.use(`/${slug}`, router);
   console.log(`[🤖] Mounted ${def.emoji} ${def.name} → /${slug}/${def.requiresInput ? " (requires input)" : ""}`);
 }
+
+// Mount Cipher (real ACP Claude agent)
+app.use("/cipher", createCipherRouter(BASE_URL));
+console.log(`[🤖] Mounted 🔐 Cipher → /cipher/ (ACP Claude)`);
 
 // SSE clients for live updates
 const sseClients = new Map<string, express.Response[]>();
