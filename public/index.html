@@ -174,6 +174,8 @@
     .badge-running { background: rgba(124,58,237,0.2); color: #7c3aed; }
     .badge-completed { background: rgba(34,197,94,0.2); color: #22c55e; }
     .badge-pending { background: rgba(102,102,102,0.2); color: #666; }
+    .badge-input-required { background: rgba(251,191,36,0.2); color: #fbbf24; }
+    .badge-resumed { background: rgba(124,58,237,0.2); color: #7c3aed; }
     .step-result .step-output { font-size: 0.85rem; color: #aaa; white-space: pre-wrap; }
 
     .pipeline-done {
@@ -183,6 +185,40 @@
       font-weight: 600;
       animation: slideIn 0.3s ease;
     }
+
+    /* Input required prompt */
+    .input-prompt {
+      margin-top: 0.8rem;
+      padding: 1rem;
+      background: rgba(251,191,36,0.08);
+      border: 1px solid rgba(251,191,36,0.3);
+      border-radius: 8px;
+      animation: slideIn 0.3s ease;
+    }
+    .input-prompt p { color: #fbbf24; font-size: 0.9rem; margin-bottom: 0.8rem; }
+    .input-prompt .input-row { display: flex; gap: 0.5rem; }
+    .input-prompt input {
+      flex: 1;
+      background: #1a1a2e;
+      border: 1px solid #2a2a3e;
+      border-radius: 6px;
+      padding: 0.5rem 0.8rem;
+      color: #e0e0e0;
+      font-size: 0.85rem;
+      outline: none;
+    }
+    .input-prompt input:focus { border-color: #fbbf24; }
+    .input-prompt button {
+      background: #fbbf24;
+      color: #0a0a0f;
+      border: none;
+      border-radius: 6px;
+      padding: 0.5rem 1.2rem;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .input-prompt button:hover { background: #f59e0b; }
 
     @keyframes slideIn {
       from { opacity: 0; transform: translateY(10px); }
@@ -324,6 +360,19 @@
       });
     }
 
+    window.sendReply = async (runId) => {
+      const input = document.getElementById('user-reply');
+      if (!input || !input.value.trim()) return;
+      const reply = input.value.trim();
+      input.disabled = true;
+      input.parentElement.querySelector('button').disabled = true;
+      await fetch(`${basePath}/api/runs/${runId}/reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reply }),
+      });
+    };
+
     window.removeStep = (i) => {
       pipeline.splice(i, 1);
       renderPipeline();
@@ -383,6 +432,37 @@
             el.querySelector('.badge').className = 'badge badge-running';
             el.querySelector('.badge').textContent = 'running';
             el.querySelector('.step-output').innerHTML = '<span class="spinner"></span> Working...';
+          }
+        }
+
+        if (data.type === 'step-input-required') {
+          const el = document.getElementById(`step-${data.step}`);
+          if (el) {
+            el.classList.remove('running');
+            el.querySelector('.badge').className = 'badge badge-input-required';
+            el.querySelector('.badge').textContent = 'input required';
+            el.querySelector('.step-output').innerHTML = data.question +
+              `<div class="input-prompt">
+                <p>⏸️ Agent is waiting for your input:</p>
+                <div class="input-row">
+                  <input id="user-reply" placeholder="Type your reply..." autofocus>
+                  <button onclick="sendReply('${runId}')">Send →</button>
+                </div>
+              </div>`;
+            document.getElementById('user-reply')?.focus();
+          }
+        }
+
+        if (data.type === 'step-resumed') {
+          const el = document.getElementById(`step-${data.step}`);
+          if (el) {
+            el.classList.add('running');
+            el.querySelector('.badge').className = 'badge badge-running';
+            el.querySelector('.badge').textContent = 'resuming';
+            // Remove the input prompt, show spinner
+            const prompt = el.querySelector('.input-prompt');
+            if (prompt) prompt.remove();
+            el.querySelector('.step-output').innerHTML += '<br><span class="spinner"></span> Resuming with your input...';
           }
         }
 

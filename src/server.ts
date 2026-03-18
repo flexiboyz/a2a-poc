@@ -4,7 +4,7 @@
  * All agents share one server on port 4000:
  *   /spark/.well-known/agent-card.json   → Spark agent card
  *   /spark/a2a/jsonrpc                   → Spark JSON-RPC
- *   /flint/...                           → Flint
+ *   /flint/...                           → Flint (requires user input!)
  *   /ghost/...                           → Ghost
  */
 
@@ -13,8 +13,8 @@ import { v4 as uuidv4 } from "uuid";
 import { resolve } from "path";
 import { createAgentRouter } from "./agents/create-agent";
 import type { AgentDef } from "./agents/create-agent";
-import { ClientFactory, A2AClient } from "@a2a-js/sdk/client";
-import type { Message } from "@a2a-js/sdk";
+import { A2AClient } from "@a2a-js/sdk/client";
+import type { Message, Task } from "@a2a-js/sdk";
 import db from "./db";
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ const BASE_URL = `http://localhost:${PORT}`;
 
 const AGENTS: AgentDef[] = [
   { name: "Spark", emoji: "✨", skill: "brainstorm", description: "Creative visionary — generates wild ideas" },
-  { name: "Flint", emoji: "🪨", skill: "validate", description: "Pragmatic builder — validates feasibility" },
+  { name: "Flint", emoji: "🪨", skill: "validate", description: "Pragmatic builder — validates feasibility", requiresInput: true },
   { name: "Ghost", emoji: "👻", skill: "critique", description: "Silent critic — finds hidden flaws" },
 ];
 
@@ -41,7 +41,7 @@ for (const def of AGENTS) {
   const slug = def.name.toLowerCase();
   const router = createAgentRouter(def, BASE_URL);
   app.use(`/${slug}`, router);
-  console.log(`[🤖] Mounted ${def.emoji} ${def.name} → /${slug}/`);
+  console.log(`[🤖] Mounted ${def.emoji} ${def.name} → /${slug}/${def.requiresInput ? " (requires input)" : ""}`);
 }
 
 // SSE clients for live updates
@@ -54,6 +54,15 @@ function broadcast(runId: string, data: any) {
   }
 }
 
+// Track runs waiting for user input: runId → { resolve, stepIndex, taskId, agentSlug }
+const pendingInputs = new Map<string, {
+  resolve: (reply: string) => void;
+  stepIndex: number;
+  taskId: string;
+  agentSlug: string;
+  question: string;
+}>();
+
 // ── API: List available agents ─────────────────────────────────────────────
 
 app.get("/api/agents", (_req, res) => {
@@ -64,6 +73,7 @@ app.get("/api/agents", (_req, res) => {
       emoji: a.emoji,
       skill: a.skill,
       description: a.description,
+      requiresInput: a.requiresInput ?? false,
       cardUrl: `${BASE_URL}/${slug}/.well-known/agent-card.json`,
     };
   }));
@@ -117,7 +127,22 @@ app.get("/api/runs/:id", (req, res) => {
   const run = db.prepare("SELECT * FROM runs WHERE id = ?").get(req.params.id) as any;
   if (!run) return res.status(404).json({ error: "Run not found" });
   const steps = db.prepare("SELECT * FROM run_steps WHERE run_id = ? ORDER BY step_order").all(req.params.id);
-  res.json({ ...run, steps });
+  const pending = pendingInputs.get(req.params.id);
+  res.json({ ...run, steps, pendingInput: pending ? { step: pending.stepIndex, question: pending.question, agent: pending.agentSlug } : null });
+});
+
+// ── API: Reply to input-required ───────────────────────────────────────────
+
+app.post("/api/runs/:id/reply", (req, res) => {
+  const { reply } = req.body;
+  const pending = pendingInputs.get(req.params.id);
+  if (!pending) return res.status(404).json({ error: "No pending input for this run" });
+  if (!reply) return res.status(400).json({ error: "reply is required" });
+
+  console.log(`[orchestrator] User replied to run ${req.params.id}: "${reply.slice(0, 100)}"`);
+  pending.resolve(reply);
+  pendingInputs.delete(req.params.id);
+  res.json({ ok: true });
 });
 
 // ── SSE: Live updates ──────────────────────────────────────────────────────
@@ -141,7 +166,6 @@ app.get("/api/runs/:id/stream", (req, res) => {
 // ── Pipeline Orchestrator ──────────────────────────────────────────────────
 
 async function executePipeline(runId: string, agentNames: string[], input: string) {
-  const factory = new ClientFactory();
   let previousOutput = "";
 
   for (let i = 0; i < agentNames.length; i++) {
@@ -172,9 +196,49 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
       },
     });
 
-    // Extract response text — SDK wraps in JSON-RPC envelope
+    // Check if response is a Task with input-required
     const result = (response as any).result ?? response;
-    const output = result.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "(no output)";
+    let output: string;
+
+    if (result.kind === "task" && result.status?.state === "input-required") {
+      // Agent needs user input!
+      const question = result.status.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "Agent needs your input";
+      const taskId = result.id;
+      console.log(`[orchestrator] ${agentDef.emoji} ${agentName} requires input (task ${taskId})`);
+
+      // Update step status
+      db.prepare("UPDATE run_steps SET status = 'input-required' WHERE run_id = ? AND step_order = ?").run(runId, i);
+      broadcast(runId, { type: "step-input-required", agent: agentName, step: i, emoji: agentDef.emoji, question });
+
+      // Wait for user reply (blocks this pipeline execution)
+      const userReply = await new Promise<string>((resolve) => {
+        pendingInputs.set(runId, { resolve, stepIndex: i, taskId, agentSlug: slug, question });
+      });
+
+      // Resume the agent with user's reply
+      console.log(`[orchestrator] Resuming ${agentName} with user reply`);
+      db.prepare("UPDATE run_steps SET status = 'running' WHERE run_id = ? AND step_order = ?").run(runId, i);
+      broadcast(runId, { type: "step-resumed", agent: agentName, step: i, emoji: agentDef.emoji });
+
+      const resumeResponse = await client.sendMessage({
+        message: {
+          messageId: uuidv4(),
+          role: "user",
+          parts: [{ kind: "text", text: userReply }],
+          kind: "message",
+          taskId, // Resume the same task!
+        },
+      });
+
+      const resumeResult = (resumeResponse as any).result ?? resumeResponse;
+      output = resumeResult.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
+        || resumeResult.status?.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
+        || "(no output)";
+    } else {
+      // Normal completion
+      output = result.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "(no output)";
+    }
+
     previousOutput = output;
 
     // Update step → completed
@@ -195,7 +259,7 @@ app.listen(PORT, () => {
   console.log(`\n[📋] Agent Cards:`);
   for (const a of AGENTS) {
     const slug = a.name.toLowerCase();
-    console.log(`     ${a.emoji} ${a.name}: ${BASE_URL}/${slug}/.well-known/agent-card.json`);
+    console.log(`     ${a.emoji} ${a.name}: ${BASE_URL}/${slug}/.well-known/agent-card.json${a.requiresInput ? " ⏸️ (input-required)" : ""}`);
   }
   console.log();
 });
