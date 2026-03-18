@@ -27,6 +27,8 @@ export interface AgentDef {
   description: string;
   /** If true, this agent will pause and request user input before completing */
   requiresInput?: boolean;
+  /** If true, this agent always fails */
+  alwaysFails?: boolean;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -83,6 +85,36 @@ export function createAgentRouter(def: AgentDef, baseUrl: string): Router {
 
       // Normal execution
       await sleep(1000 + Math.random() * 2000);
+
+      // If this agent always fails, blow up
+      if (def.alwaysFails) {
+        console.log(`[${def.emoji} ${def.name}] → FAILING`);
+
+        const task: Task = {
+          kind: "task",
+          id: ctx.taskId,
+          contextId: ctx.contextId,
+          status: {
+            state: "failed",
+            message: {
+              kind: "message",
+              messageId: uuidv4(),
+              role: "agent",
+              parts: [{
+                kind: "text",
+                text: `${def.emoji} **${def.name}** crashed!\n\n💥 Fatal error: something went terribly wrong. The agent could not complete the task.`,
+              }],
+              contextId: ctx.contextId,
+            },
+            timestamp: new Date().toISOString(),
+          },
+          history: [],
+        };
+
+        bus.publish(task);
+        bus.finished();
+        return;
+      }
 
       // If this agent requires input, pause and ask
       if (def.requiresInput) {

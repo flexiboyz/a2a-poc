@@ -28,6 +28,7 @@ const AGENTS: AgentDef[] = [
   { name: "Spark", emoji: "✨", skill: "brainstorm", description: "Creative visionary — generates wild ideas" },
   { name: "Flint", emoji: "🪨", skill: "validate", description: "Pragmatic builder — validates feasibility", requiresInput: true },
   { name: "Ghost", emoji: "👻", skill: "critique", description: "Silent critic — finds hidden flaws" },
+  { name: "Glitch", emoji: "💀", skill: "chaos", description: "Chaos agent — always fails", alwaysFails: true },
 ];
 
 // ── Single Express App ─────────────────────────────────────────────────────
@@ -199,6 +200,24 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
     // Check if response is a Task with input-required
     const result = (response as any).result ?? response;
     let output: string;
+
+    if (result.kind === "task" && result.status?.state === "failed") {
+      // Agent failed!
+      const errorMsg = result.status.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "Agent failed";
+      console.log(`[orchestrator] ${agentDef.emoji} ${agentName} FAILED`);
+      db.prepare("UPDATE run_steps SET status = 'failed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(errorMsg, runId, i);
+      broadcast(runId, { type: "step-failed", agent: agentName, step: i, emoji: agentDef.emoji, output: errorMsg });
+
+      // Fail remaining steps
+      for (let j = i + 1; j < agentNames.length; j++) {
+        db.prepare("UPDATE run_steps SET status = 'canceled' WHERE run_id = ? AND step_order = ?").run(runId, j);
+        broadcast(runId, { type: "step-canceled", agent: agentNames[j], step: j });
+      }
+
+      db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(runId);
+      broadcast(runId, { type: "pipeline-failed", error: `${agentName} failed: ${errorMsg.slice(0, 100)}` });
+      return; // Stop pipeline
+    }
 
     if (result.kind === "task" && result.status?.state === "input-required") {
       // Agent needs user input!

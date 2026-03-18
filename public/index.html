@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>A2A Pipeline Builder</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: #0a0a0f;
@@ -176,7 +176,12 @@
     .badge-pending { background: rgba(102,102,102,0.2); color: #666; }
     .badge-input-required { background: rgba(251,191,36,0.2); color: #fbbf24; }
     .badge-resumed { background: rgba(124,58,237,0.2); color: #7c3aed; }
-    .step-result .step-output { font-size: 0.85rem; color: #aaa; white-space: pre-wrap; }
+    .badge-failed { background: rgba(239,68,68,0.2); color: #ef4444; }
+    .badge-canceled { background: rgba(102,102,102,0.2); color: #666; }
+    .step-result.failed { border-color: #ef4444; }
+    .step-result.canceled { opacity: 0.4; }
+    .step-result .step-output { font-size: 0.85rem; color: #aaa; white-space: pre-wrap; user-select: text; }
+    .input-prompt input { user-select: text; }
 
     .pipeline-done {
       text-align: center;
@@ -474,6 +479,27 @@
             el.querySelector('.badge').className = 'badge badge-completed';
             el.querySelector('.badge').textContent = 'completed';
             el.querySelector('.step-output').textContent = data.output;
+          }
+        }
+
+        if (data.type === 'step-failed') {
+          const el = document.getElementById(`step-${data.step}`);
+          if (el) {
+            el.classList.remove('running');
+            el.classList.add('failed');
+            el.querySelector('.badge').className = 'badge badge-failed';
+            el.querySelector('.badge').textContent = 'failed';
+            el.querySelector('.step-output').textContent = data.output;
+          }
+        }
+
+        if (data.type === 'step-canceled') {
+          const el = document.getElementById(`step-${data.step}`);
+          if (el) {
+            el.classList.add('canceled');
+            el.querySelector('.badge').className = 'badge badge-canceled';
+            el.querySelector('.badge').textContent = 'canceled';
+            el.querySelector('.step-output').textContent = 'Skipped — previous agent failed';
           }
         }
 
