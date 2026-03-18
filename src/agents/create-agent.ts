@@ -27,8 +27,10 @@ export interface AgentDef {
   description: string;
   /** If true, this agent will pause and request user input before completing */
   requiresInput?: boolean;
-  /** If true, this agent always fails */
-  alwaysFails?: boolean;
+  /** If true, this agent always fails. If a number (0-1), probability of failure */
+  alwaysFails?: boolean | number;
+  /** If true, this agent asks whether to re-run the pipeline */
+  askRerun?: boolean;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -86,9 +88,11 @@ export function createAgentRouter(def: AgentDef, baseUrl: string): Router {
       // Normal execution
       await sleep(1000 + Math.random() * 2000);
 
-      // If this agent always fails, blow up
-      if (def.alwaysFails) {
-        console.log(`[${def.emoji} ${def.name}] → FAILING`);
+      // If this agent can fail (deterministic or random)
+      const failChance = typeof def.alwaysFails === "number" ? def.alwaysFails : (def.alwaysFails ? 1 : 0);
+      const shouldFail = failChance > 0 && Math.random() < failChance;
+      if (shouldFail) {
+        console.log(`[${def.emoji} ${def.name}] → FAILING (${Math.round(failChance * 100)}% chance)`);
 
         const task: Task = {
           kind: "task",
@@ -135,6 +139,36 @@ export function createAgentRouter(def: AgentDef, baseUrl: string): Router {
               parts: [{
                 kind: "text",
                 text: `${def.emoji} **${def.name}** needs your input!\n\nI've analyzed the topic and found something that needs your decision before I can proceed.\n\n**Question:** Should I take the bold approach or the safe approach? Reply with your choice.`,
+              }],
+              contextId: ctx.contextId,
+            },
+            timestamp: new Date().toISOString(),
+          },
+          history: [],
+        };
+
+        bus.publish(task);
+        bus.finished();
+        return;
+      }
+
+      // If this is the rerun agent, ask whether to relaunch
+      if (def.askRerun) {
+        console.log(`[${def.emoji} ${def.name}] → asking for rerun`);
+
+        const task: Task = {
+          kind: "task",
+          id: ctx.taskId,
+          contextId: ctx.contextId,
+          status: {
+            state: "input-required",
+            message: {
+              kind: "message",
+              messageId: uuidv4(),
+              role: "agent",
+              parts: [{
+                kind: "text",
+                text: `${def.emoji} **${def.name}** — Pipeline finished!\n\n✅ All agents completed successfully.\n\n**Want to re-run this pipeline?** Reply "yes" to relaunch or "no" to finish.`,
               }],
               contextId: ctx.contextId,
             },

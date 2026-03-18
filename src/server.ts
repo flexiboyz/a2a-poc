@@ -28,7 +28,8 @@ const AGENTS: AgentDef[] = [
   { name: "Spark", emoji: "✨", skill: "brainstorm", description: "Creative visionary — generates wild ideas" },
   { name: "Flint", emoji: "🪨", skill: "validate", description: "Pragmatic builder — validates feasibility", requiresInput: true },
   { name: "Ghost", emoji: "👻", skill: "critique", description: "Silent critic — finds hidden flaws" },
-  { name: "Glitch", emoji: "💀", skill: "chaos", description: "Chaos agent — always fails", alwaysFails: true },
+  { name: "Glitch", emoji: "💀", skill: "chaos", description: "Chaos agent — 50% chance of failure", alwaysFails: 0.5 },
+  { name: "Loop", emoji: "🔁", skill: "rerun", description: "Checkpoint — asks to re-run the pipeline", askRerun: true },
 ];
 
 // ── Single Express App ─────────────────────────────────────────────────────
@@ -134,15 +135,47 @@ app.get("/api/runs/:id", (req, res) => {
 
 // ── API: Reply to input-required ───────────────────────────────────────────
 
-app.post("/api/runs/:id/reply", (req, res) => {
+app.post("/api/runs/:id/reply", async (req, res) => {
   const { reply } = req.body;
   const pending = pendingInputs.get(req.params.id);
   if (!pending) return res.status(404).json({ error: "No pending input for this run" });
   if (!reply) return res.status(400).json({ error: "reply is required" });
 
-  console.log(`[orchestrator] User replied to run ${req.params.id}: "${reply.slice(0, 100)}"`);
+  const runId = req.params.id;
+  console.log(`[orchestrator] User replied to run ${runId}: "${reply.slice(0, 100)}"`);
+
+  // Check if this is a rerun request from Loop agent
+  const agentDef = AGENTS.find(a => a.name.toLowerCase() === pending.agentSlug);
+  const isRerunAgent = agentDef?.askRerun;
+  const wantsRerun = isRerunAgent && reply.toLowerCase().trim().startsWith("yes");
+
   pending.resolve(reply);
-  pendingInputs.delete(req.params.id);
+  pendingInputs.delete(runId);
+
+  if (wantsRerun) {
+    // Get original pipeline info to rerun
+    const run = db.prepare("SELECT * FROM runs WHERE id = ?").get(runId) as any;
+    const pipeline = db.prepare("SELECT * FROM pipelines WHERE id = ?").get(run?.pipeline_id) as any;
+    if (pipeline) {
+      const agents: string[] = JSON.parse(pipeline.agents);
+      const newRunId = uuidv4();
+      db.prepare("INSERT INTO runs (id, pipeline_id, status, input) VALUES (?, ?, 'running', ?)").run(newRunId, pipeline.id, run.input);
+      for (let i = 0; i < agents.length; i++) {
+        db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')").run(uuidv4(), newRunId, agents[i], i);
+      }
+      res.json({ ok: true, rerun: true, newRunId, agents });
+      // Broadcast rerun event to old run's SSE
+      broadcast(runId, { type: "pipeline-rerun", newRunId });
+      // Execute new pipeline
+      executePipeline(newRunId, agents, run.input).catch((err) => {
+        console.error(`[orchestrator] Rerun pipeline ${newRunId} failed:`, err);
+        db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(newRunId);
+        broadcast(newRunId, { type: "pipeline-failed", error: err.message });
+      });
+      return;
+    }
+  }
+
   res.json({ ok: true });
 });
 
@@ -269,6 +302,37 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
   db.prepare("UPDATE runs SET status = 'completed' WHERE id = ?").run(runId);
   broadcast(runId, { type: "pipeline-completed" });
 }
+
+// ── API: Random pipeline ───────────────────────────────────────────────────
+
+app.post("/api/random-run", async (req, res) => {
+  const input = req.body.input ?? "Random pipeline test";
+
+  // Pick random agents (exclude Loop — it goes at the end always)
+  const pool = AGENTS.filter(a => !a.askRerun);
+  const count = 2 + Math.floor(Math.random() * (pool.length - 1)); // 2 to pool.length agents
+  const shuffled = [...pool].sort(() => Math.random() - 0.5);
+  const picked = shuffled.slice(0, count).map(a => a.name);
+  // Always add Loop at the end
+  picked.push("Loop");
+
+  const pipelineId = uuidv4();
+  db.prepare("INSERT INTO pipelines (id, name, agents) VALUES (?, ?, ?)").run(pipelineId, "Random Pipeline", JSON.stringify(picked));
+
+  const runId = uuidv4();
+  db.prepare("INSERT INTO runs (id, pipeline_id, status, input) VALUES (?, ?, 'running', ?)").run(runId, pipelineId, input);
+  for (let i = 0; i < picked.length; i++) {
+    db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')").run(uuidv4(), runId, picked[i], i);
+  }
+
+  res.json({ runId, pipelineId, status: "running", agents: picked });
+
+  executePipeline(runId, picked, input).catch((err) => {
+    console.error(`[orchestrator] Random pipeline ${runId} failed:`, err);
+    db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(runId);
+    broadcast(runId, { type: "pipeline-failed", error: err.message });
+  });
+});
 
 // ── Start ──────────────────────────────────────────────────────────────────
 
