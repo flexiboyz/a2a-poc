@@ -68,6 +68,10 @@ const BASE_URL = `http://localhost:${PORT}`;
 // ── Agent Definitions ──────────────────────────────────────────────────────
 
 const AGENTS: AgentDef[] = [
+  // Real ACP Claude agents — produce YAML validated by Zod
+  { name: "WorkflowMaster", emoji: "🏃", skill: "orchestration", description: "Qualifies tasks, defines pipeline — YAML output" },
+  { name: "Cipher", emoji: "🔍", skill: "analysis", description: "Codebase analysis — YAML output validated by Zod" },
+  // Toy agents for testing
   { name: "Spark", emoji: "✨", skill: "brainstorm", description: "Creative visionary — generates wild ideas" },
   { name: "Flint", emoji: "🪨", skill: "validate", description: "Pragmatic builder — validates feasibility", requiresInput: true },
   { name: "Ghost", emoji: "👻", skill: "critique", description: "Silent critic — finds hidden flaws" },
@@ -86,8 +90,10 @@ const app = express();
 app.use(express.json());
 app.use(express.static(resolve(__dirname, "../public")));
 
-// Mount each agent on its sub-path
+// Mount toy agents on their sub-paths (skip real ACP agents — they have their own routers)
+const REAL_AGENTS = new Set(["WorkflowMaster", "Cipher"]);
 for (const def of AGENTS) {
+  if (REAL_AGENTS.has(def.name)) continue; // mounted separately below
   const slug = def.name.toLowerCase();
   const router = createAgentRouter(def, BASE_URL);
   app.use(`/${slug}`, router);
@@ -217,7 +223,7 @@ app.get("/api/metrics", (_req, res) => {
 // ── API: List available agents ─────────────────────────────────────────────
 
 app.get("/api/agents", (_req, res) => {
-  const toyAgents = AGENTS.map((a) => {
+  res.json(AGENTS.map((a) => {
     const slug = a.name.toLowerCase();
     return {
       name: a.name,
@@ -227,15 +233,7 @@ app.get("/api/agents", (_req, res) => {
       requiresInput: a.requiresInput ?? false,
       cardUrl: `${BASE_URL}/${slug}/.well-known/agent-card.json`,
     };
-  });
-
-  // Real ACP agents — produce YAML validated by Zod
-  const realAgents = [
-    { name: "WorkflowMaster", emoji: "🏃", skill: "orchestration", description: "Qualifies tasks, defines pipeline — YAML output", cardUrl: `${BASE_URL}/workflowmaster/.well-known/agent-card.json`, requiresInput: false },
-    { name: "Cipher", emoji: "🔍", skill: "analysis", description: "Codebase analysis — YAML output validated by Zod", cardUrl: `${BASE_URL}/cipher/.well-known/agent-card.json`, requiresInput: false },
-  ];
-
-  res.json([...realAgents, ...toyAgents]);
+  }));
 });
 
 // ── API: Pipeline Templates ───────────────────────────────────────────────
