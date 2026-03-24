@@ -1,13 +1,7 @@
 import { z } from "zod";
 import YAML from "js-yaml";
 import { CommonHeaderSchema } from "../schemas/common.js";
-import { WorkflowMasterSchema } from "../schemas/workflowmaster.js";
-import { CipherSchema } from "../schemas/cipher.js";
-import { AssemblerSchema } from "../schemas/assembler.js";
-import { SentinelSchema } from "../schemas/sentinel.js";
-import { HammerSchema } from "../schemas/hammer.js";
-import { PrismSchema } from "../schemas/prism.js";
-import { BastionSchema } from "../schemas/bastion.js";
+import { agentSchemas } from "../schemas/index.js";
 
 // --- Types ---
 
@@ -39,18 +33,6 @@ export interface RetryFeedback {
     previous_output: string;
   };
 }
-
-// --- Schema registry ---
-
-const agentSchemas: Record<string, z.ZodType> = {
-  WorkflowMaster: WorkflowMasterSchema,
-  Cipher: CipherSchema,
-  Assembler: AssemblerSchema,
-  Sentinel: SentinelSchema,
-  Hammer: HammerSchema,
-  Prism: PrismSchema,
-  Bastion: BastionSchema,
-};
 
 // --- Helpers ---
 
