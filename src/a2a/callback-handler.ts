@@ -380,6 +380,7 @@ export function handleDone(
       total_tokens: tokenUsage.total_tokens,
       estimated_cost: tokenUsage.estimated_cost,
       is_estimated: tokenUsage.is_estimated,
+      model: (tokenUsage as any).model ?? undefined,
     } : undefined,
   });
 
