@@ -615,6 +615,7 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
     let output: string = "";
     let validationAttempts: Array<{ attempt: number; errors: any[]; raw: string }> = [];
     let currentInput = chainedInput;
+    let a2aTaskId: string | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       db.prepare("UPDATE run_steps SET attempt = ? WHERE run_id = ? AND step_order = ?").run(attempt, runId, i);
@@ -807,8 +808,8 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
     // ── on_done: mark step completed, proceed to next agent ──
     // Retrieve token usage from real agents (Cipher, WorkflowMaster)
     let stepTokenUsage: TokenUsage | null = null;
-    if (agentName === "Cipher") stepTokenUsage = getLastCipherUsage();
-    else if (agentName === "WorkflowMaster") stepTokenUsage = getLastWorkflowMasterUsage();
+    if (agentName === "Cipher") stepTokenUsage = getLastCipherUsage(a2aTaskId);
+    else if (agentName === "WorkflowMaster") stepTokenUsage = getLastWorkflowMasterUsage(a2aTaskId);
     handleDone(ctx, output, validationAttempts, stepTokenUsage);
   }
 
@@ -927,13 +928,13 @@ async function executeSMPipeline(runId: string, pipelineId: string, input: strin
   console.log(`[orchestrator] SM derived pipeline: [${derivedAgents.join(" → ")}]`);
 
   // Mark SM step done + token usage
-  const smTokenUsage = getLastWorkflowMasterUsage();
+  const smTokenUsage = getLastWorkflowMasterUsage((result as any)?.id);
   if (smTokenUsage) {
     db.prepare(`UPDATE run_steps SET status = 'completed', output = ?,
-      input_tokens = ?, output_tokens = ?, total_tokens = ?, estimated_cost = ?,
+      input_tokens = ?, output_tokens = ?, total_tokens = ?, estimated_cost = ?, retry_token_overhead = ?,
       ended_at = datetime('now') WHERE run_id = ? AND step_order = 0`)
       .run(smOutput, smTokenUsage.input_tokens, smTokenUsage.output_tokens,
-        smTokenUsage.total_tokens, smTokenUsage.estimated_cost, runId);
+        smTokenUsage.total_tokens, smTokenUsage.estimated_cost, smTokenUsage.retry_token_overhead ?? 0, runId);
   } else {
     db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = 0").run(smOutput, runId);
   }
@@ -1017,15 +1018,16 @@ async function executeSMPipeline(runId: string, pipelineId: string, input: strin
 
       // Store token usage if available from real agents
       let derivedTokenUsage: TokenUsage | null = null;
-      if (agentName === "Cipher") derivedTokenUsage = getLastCipherUsage();
-      else if (agentName === "WorkflowMaster") derivedTokenUsage = getLastWorkflowMasterUsage();
+      const derivedTaskId = (agentStreamResult?.result as any)?.id;
+      if (agentName === "Cipher") derivedTokenUsage = getLastCipherUsage(derivedTaskId);
+      else if (agentName === "WorkflowMaster") derivedTokenUsage = getLastWorkflowMasterUsage(derivedTaskId);
 
       if (derivedTokenUsage) {
         db.prepare(`UPDATE run_steps SET status = 'completed', output = ?,
-          input_tokens = ?, output_tokens = ?, total_tokens = ?, estimated_cost = ?,
+          input_tokens = ?, output_tokens = ?, total_tokens = ?, estimated_cost = ?, retry_token_overhead = ?,
           ended_at = datetime('now') WHERE run_id = ? AND step_order = ?`)
           .run(output, derivedTokenUsage.input_tokens, derivedTokenUsage.output_tokens,
-            derivedTokenUsage.total_tokens, derivedTokenUsage.estimated_cost, runId, stepOrder);
+            derivedTokenUsage.total_tokens, derivedTokenUsage.estimated_cost, derivedTokenUsage.retry_token_overhead ?? 0, runId, stepOrder);
       } else {
         db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(output, runId, stepOrder);
       }

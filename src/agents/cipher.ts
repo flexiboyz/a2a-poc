@@ -57,10 +57,16 @@ Data & Systems Analyst — investigates structure, dependencies, and data flows.
 
 // ── Token usage tracking ────────────────────────────────────────────────
 
-let lastUsage: TokenUsage | null = null;
-export function getLastCipherUsage(): TokenUsage | null {
-  const u = lastUsage;
-  lastUsage = null;
+const usageByTask = new Map<string, TokenUsage>();
+export function getLastCipherUsage(taskId?: string): TokenUsage | null {
+  if (!taskId) {
+    const first = usageByTask.entries().next();
+    if (first.done) return null;
+    usageByTask.delete(first.value[0]);
+    return first.value[1];
+  }
+  const u = usageByTask.get(taskId) ?? null;
+  usageByTask.delete(taskId);
   return u;
 }
 
@@ -96,7 +102,8 @@ class CipherExecutor implements AgentExecutor {
           return retryResult.output;
         },
       );
-      lastUsage = cumulativeUsage;
+      cumulativeUsage.retry_token_overhead = cumulativeUsage.total_tokens - gatewayResult.usage.total_tokens;
+      usageByTask.set(ctx.taskId, cumulativeUsage);
       if (attempts > 0) {
         console.log(`[🔐 Cipher] Self-validation: ${selfValidated ? "passed" : "failed"} after ${attempts} attempt(s)`);
       }

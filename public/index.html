@@ -408,7 +408,7 @@
 
     let pipeline = []; // { name, emoji }[]
     let agents = [];
-    let stepOutputs = {}; runCost = { totalTokens: 0, totalCost: 0, steps: 0 }; // { stepIndex: outputString }
+    let stepOutputs = {}; // { stepIndex: outputString }
     let runCost = { totalTokens: 0, totalCost: 0, steps: 0 };
     const basePath = window.location.pathname.replace(/\/$/, '');
 

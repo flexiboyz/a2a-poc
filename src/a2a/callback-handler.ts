@@ -354,11 +354,11 @@ export function handleDone(
 
   if (tokenUsage) {
     db.prepare(`UPDATE run_steps SET status = 'completed', output = ?, validation_errors = ?,
-      input_tokens = ?, output_tokens = ?, total_tokens = ?, estimated_cost = ?,
+      input_tokens = ?, output_tokens = ?, total_tokens = ?, estimated_cost = ?, retry_token_overhead = ?,
       ended_at = datetime('now') WHERE run_id = ? AND step_order = ?`)
       .run(output, errorsJson,
         tokenUsage.input_tokens, tokenUsage.output_tokens, tokenUsage.total_tokens,
-        tokenUsage.estimated_cost, ctx.runId, ctx.stepIndex);
+        tokenUsage.estimated_cost, tokenUsage.retry_token_overhead ?? 0, ctx.runId, ctx.stepIndex);
   } else {
     db.prepare("UPDATE run_steps SET status = 'completed', output = ?, validation_errors = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
       .run(output, errorsJson, ctx.runId, ctx.stepIndex);

@@ -25,6 +25,7 @@ export interface TokenUsage {
   total_tokens: number;
   estimated_cost: number;
   is_estimated: boolean;
+  retry_token_overhead: number;
 }
 
 export interface GatewayResult {
@@ -86,6 +87,7 @@ export async function invokeGateway(task: string): Promise<GatewayResult> {
         total_tokens: inputTokens + outputTokens,
         estimated_cost: calculateCost(inputTokens, outputTokens, model),
         is_estimated: false,
+        retry_token_overhead: 0,
       };
     } else {
       const inputTokens = estimateTokens(task);
@@ -96,6 +98,7 @@ export async function invokeGateway(task: string): Promise<GatewayResult> {
         total_tokens: inputTokens + outputTokens,
         estimated_cost: calculateCost(inputTokens, outputTokens),
         is_estimated: true,
+        retry_token_overhead: 0,
       };
     }
 
@@ -117,9 +120,10 @@ export function accumulateUsage(base: TokenUsage, additional: TokenUsage): Token
     total_tokens: base.total_tokens + additional.total_tokens,
     estimated_cost: base.estimated_cost + additional.estimated_cost,
     is_estimated: base.is_estimated || additional.is_estimated,
+    retry_token_overhead: base.retry_token_overhead + additional.retry_token_overhead,
   };
 }
 
 export function emptyUsage(): TokenUsage {
-  return { input_tokens: 0, output_tokens: 0, total_tokens: 0, estimated_cost: 0, is_estimated: true };
+  return { input_tokens: 0, output_tokens: 0, total_tokens: 0, estimated_cost: 0, is_estimated: true, retry_token_overhead: 0 };
 }
