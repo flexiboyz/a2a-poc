@@ -110,7 +110,11 @@ class WorkflowMasterExecutor implements AgentExecutor {
 
     console.log(`[🏗️ WorkflowMaster] Received: "${text.slice(0, 120)}${text.length > 120 ? "..." : ""}"`);
 
-    const fullBrief = `${SM_BRIEF}\n\n## Task Context\n\n${text}`;
+    // Inject workspace context
+    const workspacePath = process.cwd();
+    const workspaceInfo = `\n\n## Workspace\n- **Path:** ${workspacePath}\n- **Repo:** flexiboyz/a2a-poc\n- **Branch:** main\n`;
+
+    const fullBrief = `${SM_BRIEF}${workspaceInfo}\n\n## Task Context\n\n${text}`;
 
     try {
       console.log(`[🏗️ WorkflowMaster] Calling ACP Claude via Gateway...`);
