@@ -17,7 +17,7 @@ export { HammerSchema } from "./hammer.js";
 export { PrismSchema } from "./prism.js";
 export { BastionSchema } from "./bastion.js";
 
-const agentSchemas = {
+export const agentSchemas: Record<string, z.ZodType> = {
   WorkflowMaster: WorkflowMasterSchema,
   Cipher: CipherSchema,
   Assembler: AssemblerSchema,
@@ -25,7 +25,7 @@ const agentSchemas = {
   Hammer: HammerSchema,
   Prism: PrismSchema,
   Bastion: BastionSchema,
-} as const;
+};
 
 type AgentName = keyof typeof agentSchemas;
 
