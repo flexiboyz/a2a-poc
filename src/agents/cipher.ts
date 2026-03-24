@@ -82,8 +82,18 @@ class CipherExecutor implements AgentExecutor {
 
     console.log(`[🔐 Cipher] Received: "${text.slice(0, 120)}${text.length > 120 ? "..." : ""}"`);
 
+    // Build codebase context if workspace exists
+    let codebaseContext = "";
+    try {
+      const { execSync } = await import("child_process");
+      const workspacePath = process.cwd();
+      const tree = execSync(`find ${workspacePath}/src -type f -name "*.ts" | grep -v node_modules | grep -v .next | sort`, { encoding: "utf-8", timeout: 5000 }).trim();
+      const pkgJson = execSync(`cat ${workspacePath}/package.json`, { encoding: "utf-8", timeout: 2000 }).trim();
+      codebaseContext = `\n\n## Codebase Context\n\n### File tree\n\`\`\`\n${tree}\n\`\`\`\n\n### package.json\n\`\`\`json\n${pkgJson}\n\`\`\`\n`;
+    } catch { /* no codebase available */ }
+
     // Build the full brief for ACP Claude
-    const fullBrief = `${CIPHER_BRIEF}\n\n## Task Context\n\n${text}`;
+    const fullBrief = `${CIPHER_BRIEF}${codebaseContext}\n\n## Task Context\n\n${text}`;
 
     try {
       console.log(`[🔐 Cipher] Calling ACP Claude via Gateway...`);
