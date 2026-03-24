@@ -323,6 +323,37 @@
       to { opacity: 1; transform: translateY(0); }
     }
 
+
+    /* ── Cost tracking ────────────────────────── */
+    .cost-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 0.7rem;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(251,191,36,0.1);
+      color: #fbbf24;
+      margin-left: 0.5rem;
+    }
+    .cost-badge.estimated { opacity: 0.7; }
+    .cost-summary {
+      background: #12121a;
+      border: 1px solid #1e1e2e;
+      border-radius: 12px;
+      padding: 1rem 1.5rem;
+      margin-top: 0.5rem;
+      display: flex;
+      gap: 2rem;
+      flex-wrap: wrap;
+    }
+    .cost-summary .metric {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+    .cost-summary .metric .label { font-size: 0.7rem; color: #666; text-transform: uppercase; letter-spacing: 0.05em; }
+    .cost-summary .metric .value { font-size: 1.1rem; font-weight: 600; color: #fbbf24; }
     .spinner {
       display: inline-block;
       width: 14px;
@@ -377,7 +408,8 @@
 
     let pipeline = []; // { name, emoji }[]
     let agents = [];
-    let stepOutputs = {}; // { stepIndex: outputString }
+    let stepOutputs = {}; runCost = { totalTokens: 0, totalCost: 0, steps: 0 }; // { stepIndex: outputString }
+    let runCost = { totalTokens: 0, totalCost: 0, steps: 0 };
     const basePath = window.location.pathname.replace(/\/$/, '');
 
     // ── YAML Inspector ───────────────────────────────────────────
@@ -733,11 +765,19 @@
             el.classList.add('completed');
             // Store full output for inspector
             stepOutputs[data.step] = data.output;
+            if (data.tokenUsage) {
+              runCost.totalTokens += data.tokenUsage.total_tokens;
+              runCost.totalCost += data.tokenUsage.estimated_cost;
+              runCost.steps++;
+            }
             // Show truncated preview + inspect button
             const preview = data.output.length > 200 ? data.output.slice(0, 200) + '...' : data.output;
             el.querySelector('.badge').className = 'badge badge-completed';
             el.querySelector('.badge').textContent = 'completed';
-            el.querySelector('.step-output').innerHTML = `<div style="margin-bottom:0.5rem;">${preview.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div><button onclick="openInspector(${data.step})" style="background:#1e1e2e;color:#7c3aed;border:1px solid #2a2a3e;border-radius:6px;padding:4px 12px;font-size:0.75rem;cursor:pointer;">🔍 Inspect Output</button>`;
+            const costHtml = data.tokenUsage
+              ? `<span class="cost-badge${data.tokenUsage.is_estimated ? ' estimated' : ''}">${data.tokenUsage.total_tokens.toLocaleString()} tokens | $${data.tokenUsage.estimated_cost.toFixed(4)}${data.tokenUsage.is_estimated ? ' (est.)' : ''}</span>`
+              : '';
+            el.querySelector('.step-output').innerHTML = `<div style="margin-bottom:0.5rem;">${preview.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;"><button onclick="openInspector(${data.step})" style="background:#1e1e2e;color:#7c3aed;border:1px solid #2a2a3e;border-radius:6px;padding:4px 12px;font-size:0.75rem;cursor:pointer;">🔍 Inspect Output</button>${costHtml}</div>`;
           }
         }
 
@@ -809,7 +849,13 @@
         }
 
         if (data.type === 'pipeline-completed') {
-          outputEl.innerHTML += `<div class="pipeline-done">✅ Pipeline completed!
+          const costSummary = runCost.steps > 0
+            ? `<div class="cost-summary">
+                <div class="metric"><span class="label">Total Tokens</span><span class="value">${runCost.totalTokens.toLocaleString()}</span></div>
+                <div class="metric"><span class="label">Estimated Cost</span><span class="value">$${runCost.totalCost.toFixed(4)}</span></div>
+                <div class="metric"><span class="label">Tracked Steps</span><span class="value">${runCost.steps}</span></div>
+              </div>` : '';
+          outputEl.innerHTML += `<div class="pipeline-done">✅ Pipeline completed!${costSummary}
             <div style="margin-top:0.8rem;display:flex;gap:0.5rem;justify-content:center;">
               <button onclick="replayPipeline('${runId}')" class="btn btn-run" style="font-size:0.8rem;padding:0.5rem 1rem;">🔁 Replay</button>
               <button onclick="replayPipeline('${runId}', true)" class="btn btn-clear" style="font-size:0.8rem;padding:0.5rem 1rem;">🔁 Replay from step…</button>

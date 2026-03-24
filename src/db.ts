@@ -83,4 +83,22 @@ if (!runColNames.includes("replay_from_step")) {
   db.exec("ALTER TABLE runs ADD COLUMN replay_from_step INTEGER");
 }
 
+
+// ── Token/cost tracking columns ─────────────────────────────────────────────
+if (!colNames.includes("input_tokens")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN input_tokens INTEGER");
+}
+if (!colNames.includes("output_tokens")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN output_tokens INTEGER");
+}
+if (!colNames.includes("total_tokens")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN total_tokens INTEGER");
+}
+if (!colNames.includes("estimated_cost")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN estimated_cost REAL");
+}
+if (!colNames.includes("retry_token_overhead")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN retry_token_overhead INTEGER DEFAULT 0");
+}
+
 export default db;

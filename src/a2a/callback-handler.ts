@@ -13,6 +13,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import YAML from "js-yaml";
 import { v4 as uuidv4 } from "uuid";
+import type { TokenUsage } from "../gateway.js";
 import db from "../db.js";
 import { validate, formatRetryFeedback, type ValidationFailure } from "./validator.js";
 
@@ -324,17 +325,36 @@ export function handleDone(
   ctx: CallbackContext,
   output: string,
   validationAttempts: Array<{ attempt: number; errors: any[]; raw: string }>,
+  tokenUsage?: TokenUsage | null,
 ): CallbackResult {
   const cb = resolveCallback(ctx.agentName, "on_done");
   const errorsJson = validationAttempts.length > 0 ? JSON.stringify(validationAttempts) : null;
-  db.prepare("UPDATE run_steps SET status = 'completed', output = ?, validation_errors = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
-    .run(output, errorsJson, ctx.runId, ctx.stepIndex);
+
+  if (tokenUsage) {
+    db.prepare(`UPDATE run_steps SET status = 'completed', output = ?, validation_errors = ?,
+      input_tokens = ?, output_tokens = ?, total_tokens = ?, estimated_cost = ?,
+      ended_at = datetime('now') WHERE run_id = ? AND step_order = ?`)
+      .run(output, errorsJson,
+        tokenUsage.input_tokens, tokenUsage.output_tokens, tokenUsage.total_tokens,
+        tokenUsage.estimated_cost, ctx.runId, ctx.stepIndex);
+  } else {
+    db.prepare("UPDATE run_steps SET status = 'completed', output = ?, validation_errors = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
+      .run(output, errorsJson, ctx.runId, ctx.stepIndex);
+  }
+
   ctx.broadcast(ctx.runId, {
     type: "step-completed",
     agent: ctx.agentName,
     step: ctx.stepIndex,
     emoji: ctx.agentEmoji,
     output,
+    tokenUsage: tokenUsage ? {
+      input_tokens: tokenUsage.input_tokens,
+      output_tokens: tokenUsage.output_tokens,
+      total_tokens: tokenUsage.total_tokens,
+      estimated_cost: tokenUsage.estimated_cost,
+      is_estimated: tokenUsage.is_estimated,
+    } : undefined,
   });
 
   // Default "next_agent" → continue. Other actions can be added via overrides.
