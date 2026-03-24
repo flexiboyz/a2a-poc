@@ -217,7 +217,7 @@ app.get("/api/metrics", (_req, res) => {
 // ── API: List available agents ─────────────────────────────────────────────
 
 app.get("/api/agents", (_req, res) => {
-  res.json(AGENTS.map((a) => {
+  const toyAgents = AGENTS.map((a) => {
     const slug = a.name.toLowerCase();
     return {
       name: a.name,
@@ -227,7 +227,15 @@ app.get("/api/agents", (_req, res) => {
       requiresInput: a.requiresInput ?? false,
       cardUrl: `${BASE_URL}/${slug}/.well-known/agent-card.json`,
     };
-  }));
+  });
+
+  // Real ACP agents — produce YAML validated by Zod
+  const realAgents = [
+    { name: "WorkflowMaster", emoji: "🏃", skill: "orchestration", description: "Qualifies tasks, defines pipeline — YAML output", cardUrl: `${BASE_URL}/workflowmaster/.well-known/agent-card.json`, requiresInput: false },
+    { name: "Cipher", emoji: "🔍", skill: "analysis", description: "Codebase analysis — YAML output validated by Zod", cardUrl: `${BASE_URL}/cipher/.well-known/agent-card.json`, requiresInput: false },
+  ];
+
+  res.json([...realAgents, ...toyAgents]);
 });
 
 // ── API: Pipeline Templates ───────────────────────────────────────────────
