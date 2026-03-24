@@ -144,11 +144,29 @@ export function resetCallbacksCache(): void {
 
 // ── Resolution ───────────────────────────────────────────────────────────────
 
-/** Resolve callback for agent+event — check overrides first, fall back to defaults */
-export function resolveCallback(agentName: string, event: CallbackEvent): ResolvedCallback {
+/**
+ * Resolve callback for agent+event.
+ * Precedence: agent overrides (callbacks.yaml) > template overrides > defaults
+ */
+export function resolveCallback(
+  agentName: string,
+  event: CallbackEvent,
+  templateOverrides?: Record<string, Record<string, CallbackAction>>,
+): ResolvedCallback {
   const config = loadCallbacks();
-  const raw: CallbackAction | undefined =
-    config.overrides?.[agentName]?.[event] ?? config.defaults[event];
+
+  // 1. Agent-level override (callbacks.yaml overrides section)
+  let raw: CallbackAction | undefined = config.overrides?.[agentName]?.[event];
+
+  // 2. Template-level override
+  if (!raw && templateOverrides) {
+    raw = templateOverrides[agentName]?.[event];
+  }
+
+  // 3. Default
+  if (!raw) {
+    raw = config.defaults[event];
+  }
 
   if (!raw) {
     return { action: "noop" };
@@ -319,6 +337,34 @@ export async function handleAwaitUser(
   return { outcome: "wait_input", userReply, taskId };
 }
 
+/**
+ * Generate a short summary (~200 tokens) from agent output.
+ * Prefers output.summary field from structured YAML; falls back to truncation.
+ */
+function generateSummary(output: string): string | null {
+  if (!output) return null;
+
+  // Try to extract output.summary from structured YAML
+  try {
+    const parsed = YAML.load(output) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object") {
+      const out = parsed.output as Record<string, unknown> | undefined;
+      if (out && typeof out.summary === "string" && out.summary.length > 0) {
+        return out.summary.slice(0, 800); // ~200 tokens
+      }
+      if (typeof parsed.summary === "string" && parsed.summary.length > 0) {
+        return parsed.summary.slice(0, 800);
+      }
+    }
+  } catch {
+    // Not valid YAML — fall through to truncation
+  }
+
+  // Fallback: truncate raw output to ~200 tokens (~800 chars)
+  if (output.length <= 800) return output;
+  return output.slice(0, 800) + "...";
+}
+
 /** on_done: mark step completed, dispatch based on resolved callback */
 export function handleDone(
   ctx: CallbackContext,
@@ -327,8 +373,9 @@ export function handleDone(
 ): CallbackResult {
   const cb = resolveCallback(ctx.agentName, "on_done");
   const errorsJson = validationAttempts.length > 0 ? JSON.stringify(validationAttempts) : null;
-  db.prepare("UPDATE run_steps SET status = 'completed', output = ?, validation_errors = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
-    .run(output, errorsJson, ctx.runId, ctx.stepIndex);
+  const summaryOutput = generateSummary(output);
+  db.prepare("UPDATE run_steps SET status = 'completed', output = ?, summary_output = ?, validation_errors = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
+    .run(output, summaryOutput, errorsJson, ctx.runId, ctx.stepIndex);
   ctx.broadcast(ctx.runId, {
     type: "step-completed",
     agent: ctx.agentName,

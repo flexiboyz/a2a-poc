@@ -61,6 +61,34 @@ db.exec(`
   );
 `);
 
+// ── Webhook tables ──────────────────────────────────────────────────────────
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS webhook_configs (
+    id TEXT PRIMARY KEY,
+    pipeline_id TEXT REFERENCES pipelines(id),
+    channel_type TEXT NOT NULL DEFAULT 'generic', -- telegram | slack | generic
+    webhook_url TEXT NOT NULL,
+    event_filters TEXT, -- JSON array of event types to subscribe to (null = all)
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id TEXT PRIMARY KEY,
+    webhook_config_id TEXT NOT NULL REFERENCES webhook_configs(id),
+    run_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', -- pending | delivered | failed
+    http_status INTEGER,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    delivered_at TEXT
+  );
+`);
+
 // ── Migrations ──────────────────────────────────────────────────────────────
 
 // Add attempt + validation_errors columns if missing (for existing DBs)
@@ -71,6 +99,19 @@ if (!colNames.includes("attempt")) {
 }
 if (!colNames.includes("validation_errors")) {
   db.exec("ALTER TABLE run_steps ADD COLUMN validation_errors TEXT");
+}
+if (!colNames.includes("summary_output")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN summary_output TEXT");
+}
+
+// Add replay columns to runs table if missing
+const runColumns = db.prepare("PRAGMA table_info(runs)").all() as { name: string }[];
+const runColNames = runColumns.map(c => c.name);
+if (!runColNames.includes("replay_of")) {
+  db.exec("ALTER TABLE runs ADD COLUMN replay_of TEXT");
+}
+if (!runColNames.includes("replay_from_step")) {
+  db.exec("ALTER TABLE runs ADD COLUMN replay_from_step INTEGER");
 }
 
 export default db;

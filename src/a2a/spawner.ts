@@ -34,6 +34,9 @@ interface PipelineContext {
 /**
  * Build accumulated pipeline_context for a given run step.
  * Reads all completed steps before `currentStepOrder` and assembles §7 structure.
+ *
+ * fullContextDepth controls how many adjacent prior agents get full output.
+ * Agents beyond that depth get summary_output instead (if available).
  */
 export function buildPipelineContext(
   runId: string,
@@ -42,20 +45,33 @@ export function buildPipelineContext(
   totalSteps: number,
   currentIteration: number = 1,
   maxIterations: number = 3,
+  fullContextDepth: number = 1,
 ): PipelineContext {
-  // Query completed steps before current
+  // Query completed steps before current (include summary_output)
   const completedSteps = db
     .prepare(
-      `SELECT agent_name, output FROM run_steps
+      `SELECT agent_name, output, summary_output, step_order FROM run_steps
        WHERE run_id = ? AND step_order < ? AND status = 'completed'
        ORDER BY step_order`,
     )
-    .all(runId, currentStepOrder) as { agent_name: string; output: string | null }[];
+    .all(runId, currentStepOrder) as { agent_name: string; output: string | null; summary_output: string | null; step_order: number }[];
 
   const previousAgents: PreviousAgent[] = completedSteps.map((step) => {
+    // Steps within fullContextDepth of current get full output
+    const distanceFromCurrent = currentStepOrder - step.step_order;
+    const useFullOutput = distanceFromCurrent <= fullContextDepth;
+
+    if (useFullOutput || !step.summary_output) {
+      return {
+        agent: step.agent_name,
+        output: parseAgentOutput(step.agent_name, step.output),
+      };
+    }
+
+    // Use summary for older agents
     return {
       agent: step.agent_name,
-      output: parseAgentOutput(step.agent_name, step.output),
+      output: step.summary_output,
     };
   });
 
