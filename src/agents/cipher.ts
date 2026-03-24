@@ -54,6 +54,8 @@ Data & Systems Analyst — investigates structure, dependencies, and data flows.
 1. NEVER hallucinate — if info is missing, say so explicitly
 2. Focus ONLY on the analysis objective
 3. Be structured and precise — your output feeds the next agent
+4. EVERY field must have substantive content — empty strings are NOT acceptable. If a "reason" or "description" field exists, fill it with a real explanation
+5. Risks must have detailed descriptions, files must have clear reasons for impact
 `;
 
 // ── Token usage tracking ────────────────────────────────────────────────

@@ -22,7 +22,7 @@ const GATEWAY_TOKEN = process.env["OPENCLAW_GATEWAY_TOKEN"] ?? "";
 
 const AGENT_MODELS: Record<string, string> = {
   WorkflowMaster: process.env["MODEL_WORKFLOWMASTER"] ?? "google/gemini-2.5-flash",
-  Cipher:         process.env["MODEL_CIPHER"] ?? "google/gemini-2.5-flash",
+  Cipher:         process.env["MODEL_CIPHER"] ?? "google/gemini-2.5-pro",
   Assembler:      process.env["MODEL_ASSEMBLER"] ?? "anthropic/claude-sonnet-4-20250514",
   Sentinel:       process.env["MODEL_SENTINEL"] ?? "anthropic/claude-sonnet-4-20250514",
   Hammer:         process.env["MODEL_HAMMER"] ?? "google/gemini-2.5-flash",
