@@ -54,7 +54,7 @@ export function validateAgentOutput(
     };
   }
 
-  const schema = agentSchemas[agentName];
+  const schema = agentSchemas[agentName]!;
 
   let parsed: unknown;
   try {

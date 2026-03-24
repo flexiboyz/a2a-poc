@@ -11,7 +11,7 @@ const DB_PATH = resolve(__dirname, "../data/a2a-poc.db");
 import { mkdirSync } from "fs";
 mkdirSync(resolve(__dirname, "../data"), { recursive: true });
 
-const db = new Database(DB_PATH);
+const db: import("better-sqlite3").Database = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 
 // ── Schema ─────────────────────────────────────────────────────────────────
