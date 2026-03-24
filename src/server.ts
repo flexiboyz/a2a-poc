@@ -40,10 +40,13 @@ import {
   detectPipelineSuggestion,
   abortPipeline,
   resumeStep,
+  handleGroupComplete,
+  handleGroupPartialFail,
 } from "./a2a/callback-handler";
 import {
   type PipelineStep,
   type AgentResult,
+  type GroupResult,
   type NormalizedGroup,
   normalizePipeline,
   mergeGroupOutputs,
@@ -233,22 +236,20 @@ app.post("/api/pipelines/:id/run", async (req, res) => {
   const pipeline = db.prepare("SELECT * FROM pipelines WHERE id = ?").get(req.params.id) as any;
   if (!pipeline) return res.status(404).json({ error: "Pipeline not found" });
 
-  const agents: string[] = JSON.parse(pipeline.agents);
+  const steps: PipelineStep[] = JSON.parse(pipeline.agents);
   const runId = uuidv4();
   const input = req.body.input ?? "Analyze this topic";
 
   // Create run
   db.prepare("INSERT INTO runs (id, pipeline_id, status, input) VALUES (?, ?, 'running', ?)").run(runId, pipeline.id, input);
 
-  // Create steps
-  for (let i = 0; i < agents.length; i++) {
-    db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')").run(uuidv4(), runId, agents[i], i);
-  }
+  // Create steps (handles both flat strings and group objects)
+  const agentNames = createStepsForPipeline(runId, steps);
 
-  res.json({ runId, status: "running", agents });
+  res.json({ runId, status: "running", agents: agentNames });
 
   // Execute pipeline in background
-  executePipeline(runId, agents, input).catch((err) => {
+  executePipeline(runId, steps, input).catch((err) => {
     console.error(`[orchestrator] Pipeline ${runId} failed:`, err);
     db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(runId);
     broadcast(runId, { type: "pipeline-failed", error: err.message });
@@ -295,17 +296,15 @@ app.post("/api/runs/:id/reply", async (req, res) => {
     const run = db.prepare("SELECT * FROM runs WHERE id = ?").get(runId) as any;
     const pipeline = db.prepare("SELECT * FROM pipelines WHERE id = ?").get(run?.pipeline_id) as any;
     if (pipeline) {
-      const agents: string[] = JSON.parse(pipeline.agents);
+      const steps: PipelineStep[] = JSON.parse(pipeline.agents);
       const newRunId = uuidv4();
       db.prepare("INSERT INTO runs (id, pipeline_id, status, input) VALUES (?, ?, 'running', ?)").run(newRunId, pipeline.id, run.input);
-      for (let i = 0; i < agents.length; i++) {
-        db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')").run(uuidv4(), newRunId, agents[i], i);
-      }
-      res.json({ ok: true, rerun: true, newRunId, agents });
+      const agentNames = createStepsForPipeline(newRunId, steps);
+      res.json({ ok: true, rerun: true, newRunId, agents: agentNames });
       // Broadcast rerun event to old run's SSE
       broadcast(runId, { type: "pipeline-rerun", newRunId });
       // Execute new pipeline
-      executePipeline(newRunId, agents, run.input).catch((err) => {
+      executePipeline(newRunId, steps, run.input).catch((err) => {
         console.error(`[orchestrator] Rerun pipeline ${newRunId} failed:`, err);
         db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(newRunId);
         broadcast(newRunId, { type: "pipeline-failed", error: err.message });
@@ -327,8 +326,9 @@ app.post("/api/runs/:id/replay", async (req, res) => {
   const pipeline = db.prepare("SELECT * FROM pipelines WHERE id = ?").get(originalRun.pipeline_id) as any;
   if (!pipeline) return res.status(404).json({ error: "Pipeline not found" });
 
-  const agents: string[] = JSON.parse(pipeline.agents);
-  const fromStep = typeof req.body.from_step === "number" ? Math.max(0, Math.min(req.body.from_step, agents.length - 1)) : 0;
+  const steps: PipelineStep[] = JSON.parse(pipeline.agents);
+  const allAgentNames = getAllAgentNames(normalizePipeline(steps));
+  const fromStep = typeof req.body.from_step === "number" ? Math.max(0, Math.min(req.body.from_step, allAgentNames.length - 1)) : 0;
   const input = req.body.input ?? originalRun.input;
 
   const runId = uuidv4();
@@ -343,14 +343,14 @@ app.post("/api/runs/:id/replay", async (req, res) => {
   }
 
   // Create pending steps for remaining agents
-  for (let i = fromStep; i < agents.length; i++) {
-    db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')").run(uuidv4(), runId, agents[i], i);
+  for (let i = fromStep; i < allAgentNames.length; i++) {
+    db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')").run(uuidv4(), runId, allAgentNames[i], i);
   }
 
-  res.json({ runId, status: "running", agents, replayOf: req.params.id, fromStep });
+  res.json({ runId, status: "running", agents: allAgentNames, replayOf: req.params.id, fromStep });
 
   // Execute pipeline starting from fromStep
-  executePipeline(runId, agents, input, fromStep).catch((err) => {
+  executePipeline(runId, steps, input, fromStep).catch((err) => {
     console.error(`[orchestrator] Replay pipeline ${runId} failed:`, err);
     db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(runId);
     broadcast(runId, { type: "pipeline-failed", error: err.message });
@@ -493,6 +493,44 @@ function processOutOfScope(
   } catch {
     // Output not valid YAML or no out_of_scope — skip silently
   }
+}
+
+// ── Step Creation Helper ──────────────────────────────────────────────────
+
+/**
+ * Creates run_steps (and run_groups for multi-agent groups) from a PipelineStep[].
+ * Returns the flat list of agent names for display purposes.
+ */
+function createStepsForPipeline(runId: string, steps: PipelineStep[]): string[] {
+  const groups = normalizePipeline(steps);
+  const allNames: string[] = [];
+  let stepOrder = 0;
+
+  for (let gIdx = 0; gIdx < groups.length; gIdx++) {
+    const group = groups[gIdx]!;
+
+    if (group.agents.length > 1) {
+      // Multi-agent group: create run_group + linked steps
+      const groupId = uuidv4();
+      db.prepare("INSERT INTO run_groups (id, run_id, group_order, failure_strategy, status) VALUES (?, ?, ?, ?, 'pending')")
+        .run(groupId, runId, gIdx, group.failureStrategy);
+
+      for (let j = 0; j < group.agents.length; j++) {
+        db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status, group_id, group_order) VALUES (?, ?, ?, ?, 'pending', ?, ?)")
+          .run(uuidv4(), runId, group.agents[j]!, stepOrder, groupId, j);
+        allNames.push(group.agents[j]!);
+        stepOrder++;
+      }
+    } else {
+      // Single agent
+      db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')")
+        .run(uuidv4(), runId, group.agents[0]!, stepOrder);
+      allNames.push(group.agents[0]!);
+      stepOrder++;
+    }
+  }
+
+  return allNames;
 }
 
 // ── Output Extraction (§9.3 — artifact-aware) ────────────────────────────
@@ -806,11 +844,10 @@ async function executeAgent(
 
 // ── Pipeline Orchestrator ──────────────────────────────────────────────────
 
-async function executePipeline(runId: string, agentNames: string[], input: string, startFrom = 0) {
-  // Normalize pipeline: convert string[] to NormalizedGroup[]
+async function executePipeline(runId: string, steps: PipelineStep[], input: string, startFrom = 0) {
+  // Normalize pipeline: convert mixed PipelineStep[] to NormalizedGroup[]
   // For backward compatibility, a flat string[] becomes single-agent groups
-  const pipelineSteps: PipelineStep[] = agentNames.map((name) => name);
-  const groups = normalizePipeline(pipelineSteps);
+  const groups = normalizePipeline(steps);
   const totalSteps = getTotalStepCount(groups);
   const allNames = getAllAgentNames(groups);
 
@@ -854,11 +891,22 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
       stepOrder++;
     } else {
       // ── Multi-agent group: parallel execution ──
-      const groupId = uuidv4();
+      // Look up existing group_id from run_steps (created by createStepsForPipeline)
+      const existingStep = db.prepare("SELECT group_id FROM run_steps WHERE run_id = ? AND step_order = ?").get(runId, stepOrder) as { group_id: string } | undefined;
+      const groupId = existingStep?.group_id ?? uuidv4();
 
-      // Record group in DB
-      db.prepare("INSERT INTO run_groups (id, run_id, group_order, failure_strategy, status) VALUES (?, ?, ?, ?, 'running')")
-        .run(groupId, runId, gIdx, group.failureStrategy);
+      // If no group record exists yet (e.g. SM pipeline or dynamic injection), create one
+      const existingGroup = db.prepare("SELECT id FROM run_groups WHERE id = ?").get(groupId) as { id: string } | undefined;
+      if (!existingGroup) {
+        db.prepare("INSERT INTO run_groups (id, run_id, group_order, failure_strategy, status) VALUES (?, ?, ?, ?, 'running')")
+          .run(groupId, runId, gIdx, group.failureStrategy);
+        for (let j = 0; j < group.agents.length; j++) {
+          db.prepare("UPDATE run_steps SET group_id = ?, group_order = ? WHERE run_id = ? AND step_order = ?")
+            .run(groupId, j, runId, stepOrder + j);
+        }
+      } else {
+        db.prepare("UPDATE run_groups SET status = 'running' WHERE id = ?").run(groupId);
+      }
 
       console.log(`[orchestrator] Starting parallel group ${gIdx} [${group.agents.join(", ")}] (strategy: ${group.failureStrategy})`);
       broadcast(runId, {
@@ -867,12 +915,6 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
         agents: group.agents,
         failureStrategy: group.failureStrategy,
       });
-
-      // Update group_id on run_steps
-      for (let j = 0; j < group.agents.length; j++) {
-        db.prepare("UPDATE run_steps SET group_id = ?, group_order = ? WHERE run_id = ? AND step_order = ?")
-          .run(groupId, j, runId, stepOrder + j);
-      }
 
       // Run all agents in parallel
       const promises = group.agents.map((agentName, j) =>
@@ -889,36 +931,53 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
         r.status === "fulfilled" ? r.value : { agentName: "unknown", status: "failed" as const, output: String(r.reason) }
       );
 
-      // Resolve group status
-      const groupStatus = resolveGroupStatus(agentResults, group.failureStrategy);
-      const mergedOutput = mergeGroupOutputs(agentResults);
-
-      // Collect deferred pipeline suggestions
+      // Build GroupResult
       const deferredSuggestions = agentResults
         .filter((r) => r.pipelineSuggestion)
         .map((r) => ({ agentName: r.agentName, suggestion: r.pipelineSuggestion! }));
 
-      // Finalize group
-      finalizeGroup(groupId, groupStatus, mergedOutput);
+      const groupResult: GroupResult = {
+        status: resolveGroupStatus(agentResults, group.failureStrategy),
+        mergedOutput: mergeGroupOutputs(agentResults),
+        results: agentResults,
+        deferredSuggestions,
+      };
 
-      console.log(`[orchestrator] Group ${gIdx} completed: status=${groupStatus}, ${agentResults.filter(r => r.status === "completed").length}/${agentResults.length} succeeded`);
-      broadcast(runId, {
-        type: "group-completed",
-        groupOrder: gIdx,
-        status: groupStatus,
-        results: agentResults.map((r) => ({ agent: r.agentName, status: r.status })),
-      });
+      // Finalize group in DB
+      finalizeGroup(groupId, groupResult.status, groupResult.mergedOutput);
+
+      console.log(`[orchestrator] Group ${gIdx} completed: status=${groupResult.status}, ${agentResults.filter(r => r.status === "completed").length}/${agentResults.length} succeeded`);
+
+      // Fire group callbacks via callback handler
+      const groupCtx: CallbackContext = {
+        runId,
+        stepIndex: stepOrder,
+        agentName: group.agents[0]!,
+        agentEmoji: AGENTS.find(a => a.name === group.agents[0])?.emoji ?? "❓",
+        agentSlug: group.agents[0]!.toLowerCase(),
+        agentNames: allNames,
+        groupId,
+        broadcast,
+        pendingInputs,
+      };
+
+      if (groupResult.status === "completed") {
+        handleGroupComplete(groupCtx, group.agents, groupResult.mergedOutput);
+      } else if (groupResult.status === "partial") {
+        const failedAgents = agentResults.filter(r => r.status === "failed").map(r => r.agentName);
+        handleGroupPartialFail(groupCtx, group.agents, failedAgents, groupResult.mergedOutput);
+      }
 
       // Evaluate deferred pipeline suggestions at merge point
-      if (deferredSuggestions.length > 0) {
-        console.log(`[orchestrator] Evaluating ${deferredSuggestions.length} deferred pipeline suggestion(s) from group ${gIdx}`);
-        for (const { agentName, suggestion } of deferredSuggestions) {
+      if (groupResult.deferredSuggestions.length > 0) {
+        console.log(`[orchestrator] Evaluating ${groupResult.deferredSuggestions.length} deferred pipeline suggestion(s) from group ${gIdx}`);
+        for (const { agentName, suggestion } of groupResult.deferredSuggestions) {
           const agentDef = AGENTS.find((a) => a.name === agentName);
           const deferCtx: CallbackContext = {
             runId,
             stepIndex: stepOrder,
             agentName,
-            agentEmoji: agentDef?.emoji ?? "\u2753",
+            agentEmoji: agentDef?.emoji ?? "❓",
             agentSlug: agentName.toLowerCase(),
             agentNames: allNames,
             groupId,
@@ -934,21 +993,11 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
       }
 
       // Handle group failure
-      if (groupStatus === "failed") {
+      if (groupResult.status === "failed") {
         console.log(`[orchestrator] Group ${gIdx} failed with strategy '${group.failureStrategy}' — aborting pipeline`);
         db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(runId);
         broadcast(runId, { type: "pipeline-failed", error: `Parallel group ${gIdx} failed (all agents)` });
         return;
-      }
-
-      if (groupStatus === "partial") {
-        console.log(`[orchestrator] Group ${gIdx} partially failed — continuing with successful results (continue_partial)`);
-        broadcast(runId, {
-          type: "group-partial-fail",
-          groupOrder: gIdx,
-          failedAgents: agentResults.filter((r) => r.status === "failed").map((r) => r.agentName),
-          successAgents: agentResults.filter((r) => r.status === "completed").map((r) => r.agentName),
-        });
       }
 
       stepOrder += group.agents.length;
@@ -973,18 +1022,17 @@ app.post("/api/random-run", async (req, res) => {
   // Always add Loop at the end
   picked.push("Loop");
 
+  const steps: PipelineStep[] = picked;
   const pipelineId = uuidv4();
-  db.prepare("INSERT INTO pipelines (id, name, agents) VALUES (?, ?, ?)").run(pipelineId, "Random Pipeline", JSON.stringify(picked));
+  db.prepare("INSERT INTO pipelines (id, name, agents) VALUES (?, ?, ?)").run(pipelineId, "Random Pipeline", JSON.stringify(steps));
 
   const runId = uuidv4();
   db.prepare("INSERT INTO runs (id, pipeline_id, status, input) VALUES (?, ?, 'running', ?)").run(runId, pipelineId, input);
-  for (let i = 0; i < picked.length; i++) {
-    db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')").run(uuidv4(), runId, picked[i], i);
-  }
+  createStepsForPipeline(runId, steps);
 
   res.json({ runId, pipelineId, status: "running", agents: picked });
 
-  executePipeline(runId, picked, input).catch((err) => {
+  executePipeline(runId, steps, input).catch((err) => {
     console.error(`[orchestrator] Random pipeline ${runId} failed:`, err);
     db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(runId);
     broadcast(runId, { type: "pipeline-failed", error: err.message });
@@ -1063,106 +1111,51 @@ async function executeSMPipeline(runId: string, pipelineId: string, input: strin
     throw new Error(`WorkflowMaster output validation failed`);
   }
 
-  // Parse validated output to extract pipeline
+  // Parse validated output to extract pipeline (may contain groups)
   const parsed = YAML.load(smOutput) as any;
-  const derivedAgents: string[] = parsed.output.pipeline;
+  const derivedSteps: PipelineStep[] = parsed.output.pipeline;
+  const derivedAgentNames = getAllAgentNames(normalizePipeline(derivedSteps));
 
-  console.log(`[orchestrator] SM derived pipeline: [${derivedAgents.join(" → ")}]`);
+  console.log(`[orchestrator] SM derived pipeline: [${derivedAgentNames.join(" → ")}]`);
 
   // Mark SM step done
   db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = 0").run(smOutput, runId);
   broadcast(runId, { type: "step-completed", agent: "WorkflowMaster", step: 0, emoji: "🏗️", output: smOutput });
 
   // ── Derive pipeline from SM output ────────────────────────────────────
-  // Update pipeline with derived agents (SM + derived)
-  const allAgents = ["WorkflowMaster", ...derivedAgents];
-  db.prepare("UPDATE pipelines SET agents = ? WHERE id = ?").run(JSON.stringify(allAgents), pipelineId);
+  // Full pipeline = SM step + derived steps
+  const fullSteps: PipelineStep[] = ["WorkflowMaster", ...derivedSteps];
+  db.prepare("UPDATE pipelines SET agents = ? WHERE id = ?").run(JSON.stringify(fullSteps), pipelineId);
 
-  // Create run_steps for derived agents
-  for (let i = 0; i < derivedAgents.length; i++) {
-    db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')")
-      .run(uuidv4(), runId, derivedAgents[i], i + 1);
+  // Create run_steps for derived agents (offset by 1 for SM step)
+  const derivedGroups = normalizePipeline(derivedSteps);
+  let derivedStepOrder = 1;
+  for (let gIdx = 0; gIdx < derivedGroups.length; gIdx++) {
+    const group = derivedGroups[gIdx]!;
+    if (group.agents.length > 1) {
+      const groupId = uuidv4();
+      db.prepare("INSERT INTO run_groups (id, run_id, group_order, failure_strategy, status) VALUES (?, ?, ?, ?, 'pending')")
+        .run(groupId, runId, gIdx, group.failureStrategy);
+      for (let j = 0; j < group.agents.length; j++) {
+        db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status, group_id, group_order) VALUES (?, ?, ?, ?, 'pending', ?, ?)")
+          .run(uuidv4(), runId, group.agents[j]!, derivedStepOrder++, groupId, j);
+      }
+    } else {
+      db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')")
+        .run(uuidv4(), runId, group.agents[0]!, derivedStepOrder++);
+    }
   }
 
   broadcast(runId, {
     type: "sm-pipeline-derived",
-    agents: derivedAgents,
+    agents: derivedAgentNames,
     qualification: parsed.output.qualification,
     acceptance_criteria: parsed.output.acceptance_criteria,
   });
 
-  // ── Execute derived pipeline ──────────────────────────────────────────
-  // Pass SM YAML as context to downstream agents
-  const smContext = `## WorkflowMaster Output\n\`\`\`yaml\n${smOutput}\n\`\`\`\n\n## Original Task\n${input}`;
-
-  // Re-use executePipeline but with offset step orders
-  // We need to run the derived agents starting from step_order 1
-  for (let i = 0; i < derivedAgents.length; i++) {
-    const agentName = derivedAgents[i]!;
-    const stepOrder = i + 1;
-    const slug = agentName.toLowerCase();
-
-    // Check if agent exists (simulated or real)
-    const agentDef = AGENTS.find((a) => a.name === agentName);
-    const isRealAgent = ["Cipher", "WorkflowMaster"].includes(agentName);
-
-    if (!agentDef && !isRealAgent) {
-      console.warn(`[orchestrator] Unknown agent in SM pipeline: ${agentName} — skipping`);
-      db.prepare("UPDATE run_steps SET status = 'failed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
-        .run(`Unknown agent: ${agentName}`, runId, stepOrder);
-      broadcast(runId, { type: "step-failed", agent: agentName, step: stepOrder, emoji: "❓", error: `Unknown agent: ${agentName}` });
-      continue;
-    }
-
-    db.prepare("UPDATE run_steps SET status = 'running', started_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(runId, stepOrder);
-    broadcast(runId, { type: "step-started", agent: agentName, step: stepOrder, emoji: agentDef?.emoji ?? "🤖" });
-
-    // Build context with SM output + accumulated pipeline context
-    const pipelineContext = buildPipelineContext(runId, stepOrder, input, allAgents.length);
-    const contextYaml = formatPipelineContextYaml(pipelineContext);
-
-    const agentInput = `## Pipeline Context\n\`\`\`yaml\n${contextYaml}\`\`\`\n\n## Your Task\nBuild on previous agents' work. You are step ${stepOrder + 1}/${allAgents.length}.`;
-
-    try {
-      const agentCardUrl = `${BASE_URL}/${slug}/.well-known/agent-card.json`;
-      const agentClient = await A2AClient.fromCardUrl(agentCardUrl);
-
-      const agentStreamResult = await sendMessageStream(agentClient, {
-        message: {
-          messageId: uuidv4(),
-          role: "user",
-          parts: [{ kind: "text", text: agentInput }],
-          kind: "message",
-        },
-      });
-
-      const agentResult = agentStreamResult.result as any;
-      const output = extractOutput(agentStreamResult.events, agentResult);
-
-      // Validate if schema exists
-      const { agentSchemas } = await import("./schemas/index");
-      if (agentSchemas[agentName]) {
-        const valResult = validate(agentName, output);
-        if (!valResult.success) {
-          console.warn(`[orchestrator] ${agentName} validation failed in SM pipeline — continuing with raw output`);
-        }
-      }
-
-      db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(output, runId, stepOrder);
-      broadcast(runId, { type: "step-completed", agent: agentName, step: stepOrder, emoji: agentDef?.emoji ?? "🤖", output });
-    } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[orchestrator] SM pipeline agent ${agentName} failed:`, errorMsg);
-      db.prepare("UPDATE run_steps SET status = 'failed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
-        .run(errorMsg, runId, stepOrder);
-      broadcast(runId, { type: "step-failed", agent: agentName, step: stepOrder, emoji: agentDef?.emoji ?? "🤖", error: errorMsg });
-      // Continue to next agent — don't abort entire pipeline on single failure
-    }
-  }
-
-  // Pipeline done
-  db.prepare("UPDATE runs SET status = 'completed' WHERE id = ?").run(runId);
-  broadcast(runId, { type: "pipeline-completed" });
+  // ── Execute derived pipeline via executePipeline (starting from step 1) ──
+  // executePipeline handles completion/failure status and broadcast
+  await executePipeline(runId, fullSteps, input, 1);
 }
 
 // ── Start ──────────────────────────────────────────────────────────────────

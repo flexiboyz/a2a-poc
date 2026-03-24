@@ -95,7 +95,7 @@ if (!colNames.includes("group_order")) {
 db.exec(`
   CREATE TABLE IF NOT EXISTS run_groups (
     id TEXT PRIMARY KEY,
-    run_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES runs(id),
     group_order INTEGER NOT NULL,
     failure_strategy TEXT DEFAULT 'fail_all',
     status TEXT DEFAULT 'pending',

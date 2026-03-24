@@ -535,6 +535,54 @@ function parsePipelineSuggestion(raw: string): PipelineSuggestion | null {
   return null;
 }
 
+/** on_group_complete: all agents in a parallel group succeeded */
+export function handleGroupComplete(
+  ctx: CallbackContext,
+  groupAgents: string[],
+  mergedOutput: string,
+): CallbackResult {
+  const cb = resolveCallback(ctx.agentName, "on_group_complete");
+  ctx.broadcast(ctx.runId, {
+    type: "group-completed",
+    agents: groupAgents,
+    groupId: ctx.groupId,
+    mergedOutput: mergedOutput.slice(0, 500),
+  });
+  if (cb.action === "notify_user") {
+    ctx.broadcast(ctx.runId, {
+      type: "group-notify",
+      agents: groupAgents,
+      message: `Group [${groupAgents.join(", ")}] completed successfully.`,
+    });
+  }
+  return { outcome: "continue" };
+}
+
+/** on_group_partial_fail: some agents in a parallel group failed (continue_partial strategy) */
+export function handleGroupPartialFail(
+  ctx: CallbackContext,
+  groupAgents: string[],
+  failedAgents: string[],
+  mergedOutput: string,
+): CallbackResult {
+  const cb = resolveCallback(ctx.agentName, "on_group_partial_fail");
+  ctx.broadcast(ctx.runId, {
+    type: "group-partial-fail",
+    agents: groupAgents,
+    failedAgents,
+    groupId: ctx.groupId,
+    mergedOutput: mergedOutput.slice(0, 500),
+  });
+  if (cb.action === "notify_user") {
+    ctx.broadcast(ctx.runId, {
+      type: "group-notify",
+      agents: groupAgents,
+      message: `Group [${groupAgents.join(", ")}] partially failed. Failed: [${failedAgents.join(", ")}].`,
+    });
+  }
+  return { outcome: "continue" };
+}
+
 /** Resume step after escalation fix/retry */
 export function resumeStep(ctx: CallbackContext): void {
   db.prepare("UPDATE run_steps SET status = 'running' WHERE run_id = ? AND step_order = ?")
