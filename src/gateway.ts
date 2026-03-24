@@ -22,9 +22,9 @@ const GATEWAY_TOKEN = process.env["OPENCLAW_GATEWAY_TOKEN"] ?? "";
 
 const AGENT_MODELS: Record<string, string> = {
   WorkflowMaster: process.env["MODEL_WORKFLOWMASTER"] ?? "google/gemini-2.5-flash",
-  Cipher:         process.env["MODEL_CIPHER"] ?? "anthropic/claude-sonnet-4-20250514",
-  Assembler:      process.env["MODEL_ASSEMBLER"] ?? "anthropic/claude-sonnet-4-20250514",
-  Sentinel:       process.env["MODEL_SENTINEL"] ?? "anthropic/claude-sonnet-4-20250514",
+  Cipher:         process.env["MODEL_CIPHER"] ?? "anthropic/claude-sonnet-4.5",
+  Assembler:      process.env["MODEL_ASSEMBLER"] ?? "anthropic/claude-sonnet-4.5",
+  Sentinel:       process.env["MODEL_SENTINEL"] ?? "anthropic/claude-sonnet-4.5",
   Hammer:         process.env["MODEL_HAMMER"] ?? "google/gemini-2.5-flash",
   Prism:          process.env["MODEL_PRISM"] ?? "google/gemini-2.5-flash",
   Bastion:        process.env["MODEL_BASTION"] ?? "google/gemini-2.5-flash",
@@ -34,7 +34,7 @@ const AGENT_MODELS: Record<string, string> = {
 // ── Model pricing (per 1M tokens) ────────────────────────────────────────────
 
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  "anthropic/claude-sonnet-4-20250514": { input: 3.0, output: 15.0 },
+  "anthropic/claude-sonnet-4.5": { input: 3.0, output: 15.0 },
   "anthropic/claude-opus-4-20250514": { input: 15.0, output: 75.0 },
   "anthropic/claude-haiku-3-5-20241022": { input: 1.0, output: 5.0 },
   "google/gemini-2.5-flash": { input: 0.15, output: 0.60 },
@@ -94,8 +94,10 @@ async function invokeOpenRouter(task: string, agentName: string, jsonSchema?: Re
   const client = getClient();
 
   // Build response_format if JSON schema provided (structured outputs)
+  // Only for models that support it (Gemini, OpenAI) — NOT Anthropic
   let responseFormat: any = undefined;
-  if (jsonSchema) {
+  const supportsStructuredOutput = !model.startsWith("anthropic/");
+  if (jsonSchema && supportsStructuredOutput) {
     responseFormat = {
       type: "json_schema" as const,
       json_schema: {
@@ -105,6 +107,8 @@ async function invokeOpenRouter(task: string, agentName: string, jsonSchema?: Re
       },
     };
     console.log(`[gateway] ${agentName} → structured output enabled (JSON Schema)`);
+  } else if (jsonSchema) {
+    console.log(`[gateway] ${agentName} → ${model} doesn't support structured output, using prompt-only`);
   }
 
   try {
