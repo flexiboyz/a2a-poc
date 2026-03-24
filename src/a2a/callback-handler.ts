@@ -64,7 +64,14 @@ export type CallbackResult =
   | { outcome: "fix"; output: string }               // user provided fix
   | { outcome: "reset"; input: string }              // user chose retry (reset attempts)
   | { outcome: "wait_input"; userReply: string; taskId: string }  // on_await_user resolved
+  | { outcome: "modify_pipeline"; suggestion: PipelineSuggestion }  // pipeline_suggestion approved
   | { outcome: "noop" };                             // callback handled, no further action
+
+export interface PipelineSuggestion {
+  action: "insert_after_current" | "insert_before_next" | "replace_next";
+  agent: string;
+  reason: string;
+}
 
 // ── Config loading ───────────────────────────────────────────────────────────
 
@@ -431,13 +438,19 @@ export async function handlePipelineSuggestion(
       .run(ctx.runId, ctx.stepIndex);
     db.prepare("UPDATE runs SET status = 'waiting_user' WHERE id = ?").run(ctx.runId);
 
-    const question = `${ctx.agentEmoji} ${ctx.agentName} suggests pipeline changes:\n${suggestion}\n\nApprove or dismiss?`;
+    // Try to parse the suggestion as YAML/JSON to get structured data
+    const parsed = parsePipelineSuggestion(suggestion);
+    const displaySuggestion = parsed
+      ? `Action: ${parsed.action}\nAgent: ${parsed.agent}\nReason: ${parsed.reason}`
+      : suggestion;
+
+    const question = `${ctx.agentEmoji} ${ctx.agentName} suggests pipeline changes:\n${displaySuggestion}\n\nApprove or dismiss?`;
     ctx.broadcast(ctx.runId, {
       type: "step-pipeline-suggestion",
       agent: ctx.agentName,
       step: ctx.stepIndex,
       emoji: ctx.agentEmoji,
-      suggestion,
+      suggestion: displaySuggestion,
       question,
     });
 
@@ -451,9 +464,11 @@ export async function handlePipelineSuggestion(
       });
     });
 
+    const approved = reply.toLowerCase().startsWith("approve");
+
     // Resume after user decision
     db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
-      .run(`Pipeline suggestion ${reply.toLowerCase().startsWith("approve") ? "approved" : "dismissed"}: ${suggestion.slice(0, 200)}`, ctx.runId, ctx.stepIndex);
+      .run(`Pipeline suggestion ${approved ? "approved" : "dismissed"}: ${suggestion.slice(0, 200)}`, ctx.runId, ctx.stepIndex);
     db.prepare("UPDATE runs SET status = 'running' WHERE id = ?").run(ctx.runId);
 
     ctx.broadcast(ctx.runId, {
@@ -464,6 +479,11 @@ export async function handlePipelineSuggestion(
       output: `Pipeline suggestion: ${reply}`,
     });
 
+    // If approved and we have a valid parsed suggestion, modify the pipeline
+    if (approved && parsed) {
+      return { outcome: "modify_pipeline", suggestion: parsed };
+    }
+
     return { outcome: "continue" };
   }
 
@@ -472,6 +492,39 @@ export async function handlePipelineSuggestion(
   }
 
   return { outcome: "noop" };
+}
+
+/** Parse pipeline suggestion from raw text (YAML or JSON) */
+function parsePipelineSuggestion(raw: string): PipelineSuggestion | null {
+  try {
+    const parsed = YAML.load(raw) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object" && parsed.action && parsed.agent) {
+      const action = String(parsed.action);
+      if (["insert_after_current", "insert_before_next", "replace_next"].includes(action)) {
+        return {
+          action: action as PipelineSuggestion["action"],
+          agent: String(parsed.agent),
+          reason: String(parsed.reason ?? ""),
+        };
+      }
+    }
+  } catch { /* not valid YAML — try JSON */ }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.action && parsed.agent) {
+      const action = String(parsed.action);
+      if (["insert_after_current", "insert_before_next", "replace_next"].includes(action)) {
+        return {
+          action: action as PipelineSuggestion["action"],
+          agent: String(parsed.agent),
+          reason: String(parsed.reason ?? ""),
+        };
+      }
+    }
+  } catch { /* not valid JSON either */ }
+
+  return null;
 }
 
 /** Resume step after escalation fix/retry */

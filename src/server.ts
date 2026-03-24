@@ -20,8 +20,10 @@ import { sendMessageStream } from "./a2a/client";
 import db from "./db";
 import { validate } from "./a2a/validator";
 import { buildPipelineContext, formatPipelineContextYaml } from "./a2a/spawner";
+import YAML from "js-yaml";
 import {
   type CallbackContext,
+  type PipelineSuggestion,
   getMaxRetries,
   handleAgentFail,
   handleValidationFail,
@@ -211,6 +213,13 @@ app.post("/api/runs/:id/reply", async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── API: Backlog tickets ──────────────────────────────────────────────────
+
+app.get("/api/runs/:id/backlog", (req, res) => {
+  const tickets = db.prepare("SELECT * FROM backlog_tickets WHERE run_id = ? ORDER BY created_at").all(req.params.id);
+  res.json(tickets);
+});
+
 // ── SSE: Live updates ──────────────────────────────────────────────────────
 
 app.get("/api/runs/:id/stream", (req, res) => {
@@ -228,6 +237,119 @@ app.get("/api/runs/:id/stream", (req, res) => {
     sseClients.set(runId, clients.filter((c) => c !== res));
   });
 });
+
+// ── Pipeline Modification ─────────────────────────────────────────────────
+
+function applyPipelineModification(
+  runId: string,
+  currentStep: number,
+  agentNames: string[],
+  suggestion: PipelineSuggestion,
+) {
+  const { action, agent: newAgent } = suggestion;
+  const agentDef = AGENTS.find(a => a.name === newAgent);
+
+  console.log(`[orchestrator] Applying pipeline modification: ${action} agent=${newAgent} at step ${currentStep}`);
+
+  if (action === "insert_after_current") {
+    // Insert new agent right after current step
+    const remaining = agentNames.slice(currentStep + 1);
+    agentNames.splice(currentStep + 1, remaining.length, newAgent, ...remaining);
+
+    // Insert new run_step
+    db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')")
+      .run(uuidv4(), runId, newAgent, currentStep + 1);
+
+    // Shift remaining steps forward
+    for (let j = 0; j < remaining.length; j++) {
+      const oldOrder = currentStep + 1 + j;
+      const newOrder = currentStep + 2 + j;
+      db.prepare("UPDATE run_steps SET step_order = ? WHERE run_id = ? AND agent_name = ? AND step_order = ?")
+        .run(newOrder, runId, remaining[j]!, oldOrder);
+    }
+  } else if (action === "insert_before_next") {
+    // Same as insert_after_current (next step = currentStep + 1)
+    const remaining = agentNames.slice(currentStep + 1);
+    agentNames.splice(currentStep + 1, remaining.length, newAgent, ...remaining);
+
+    db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')")
+      .run(uuidv4(), runId, newAgent, currentStep + 1);
+
+    for (let j = 0; j < remaining.length; j++) {
+      const oldOrder = currentStep + 1 + j;
+      const newOrder = currentStep + 2 + j;
+      db.prepare("UPDATE run_steps SET step_order = ? WHERE run_id = ? AND agent_name = ? AND step_order = ?")
+        .run(newOrder, runId, remaining[j]!, oldOrder);
+    }
+  } else if (action === "replace_next") {
+    // Replace the next agent in the pipeline
+    const nextStep = currentStep + 1;
+    if (nextStep < agentNames.length) {
+      const replacedAgent = agentNames[nextStep];
+      agentNames[nextStep] = newAgent;
+
+      db.prepare("UPDATE run_steps SET agent_name = ? WHERE run_id = ? AND step_order = ?")
+        .run(newAgent, runId, nextStep);
+
+      console.log(`[orchestrator] Replaced ${replacedAgent} with ${newAgent} at step ${nextStep}`);
+    }
+  }
+
+  broadcast(runId, {
+    type: "pipeline-modified",
+    action,
+    agent: newAgent,
+    emoji: agentDef?.emoji || "❓",
+    step: currentStep,
+    reason: suggestion.reason,
+  });
+}
+
+// ── Out of Scope Processing ──────────────────────────────────────────────
+
+function processOutOfScope(
+  runId: string,
+  agentName: string,
+  stepOrder: number,
+  output: string,
+) {
+  try {
+    const parsed = YAML.load(output) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return;
+
+    const outOfScope = parsed.out_of_scope;
+    if (!Array.isArray(outOfScope) || outOfScope.length === 0) return;
+
+    const insert = db.prepare(
+      "INSERT INTO backlog_tickets (id, run_id, agent_name, step_order, title, description, priority) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    );
+
+    for (const item of outOfScope) {
+      if (!item || typeof item !== "object" || !item.title) continue;
+      insert.run(
+        uuidv4(),
+        runId,
+        agentName,
+        stepOrder,
+        String(item.title),
+        String(item.description ?? ""),
+        String(item.priority ?? "medium"),
+      );
+    }
+
+    console.log(`[orchestrator] Created ${outOfScope.length} backlog ticket(s) from ${agentName} out_of_scope items`);
+
+    broadcast(runId, {
+      type: "out-of-scope-tickets",
+      agent: agentName,
+      step: stepOrder,
+      count: outOfScope.length,
+      items: outOfScope.map((item: any) => ({ title: item.title, priority: item.priority ?? "medium" })),
+    });
+  } catch {
+    // Output not valid YAML or no out_of_scope — skip silently
+  }
+}
 
 // ── Pipeline Orchestrator ──────────────────────────────────────────────────
 
@@ -408,6 +530,10 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
       if (pipelineSuggestion) {
         console.log(`[orchestrator] ${agentDef.emoji} ${agentName} suggested pipeline changes`);
         const psResult = await handlePipelineSuggestion(ctx, pipelineSuggestion);
+        if (psResult.outcome === "modify_pipeline") {
+          applyPipelineModification(runId, i, agentNames, psResult.suggestion);
+          break;
+        }
         if (psResult.outcome === "continue") break;
         if (psResult.outcome === "noop") { /* fall through to validation */ }
       }
@@ -453,6 +579,9 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
     if (agentDef.branches && output.startsWith("🔀")) {
       continue;
     }
+
+    // ── out_of_scope: extract items and create backlog tickets ──
+    processOutOfScope(runId, agentName, i, output);
 
     // ── on_done: mark step completed, proceed to next agent ──
     handleDone(ctx, output, validationAttempts);

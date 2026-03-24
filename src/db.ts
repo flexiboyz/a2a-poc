@@ -44,6 +44,17 @@ db.exec(`
     started_at TEXT,
     ended_at TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS backlog_tickets (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    agent_name TEXT NOT NULL,
+    step_order INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    priority TEXT DEFAULT 'medium',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // ── Migrations ──────────────────────────────────────────────────────────────
