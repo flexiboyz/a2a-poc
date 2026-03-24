@@ -9,7 +9,9 @@ import { OpenRouter } from "@openrouter/sdk";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
-const OPENROUTER_API_KEY = process.env["OPENROUTER_API_KEY"] ?? "";
+function getApiKey(): string {
+  return process.env["OPENROUTER_API_KEY"] ?? "";
+}
 
 // Fallback to OpenClaw Gateway
 const GATEWAY_URL = process.env["OPENCLAW_GATEWAY_URL"] ?? "http://127.0.0.1:18789";
@@ -74,9 +76,12 @@ function getModelForAgent(agentName: string): string {
 // ── OpenRouter SDK client (singleton) ───────────────────────────────────────
 
 let _client: OpenRouter | null = null;
+let _clientKey: string = "";
 function getClient(): OpenRouter {
-  if (!_client) {
-    _client = new OpenRouter({ apiKey: OPENROUTER_API_KEY });
+  const key = getApiKey();
+  if (!_client || key !== _clientKey) {
+    _client = new OpenRouter({ apiKey: key });
+    _clientKey = key;
   }
   return _client;
 }
@@ -209,7 +214,7 @@ async function invokeOpenClawGateway(task: string): Promise<GatewayResult> {
 // ── Main export — routes to OpenRouter SDK or OpenClaw Gateway ──────────────
 
 export async function invokeGateway(task: string, agentName?: string): Promise<GatewayResult> {
-  if (OPENROUTER_API_KEY) {
+  if (getApiKey()) {
     return invokeOpenRouter(task, agentName ?? "default");
   }
   return invokeOpenClawGateway(task);
