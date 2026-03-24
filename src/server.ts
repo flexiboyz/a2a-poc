@@ -41,6 +41,7 @@ import {
   abortPipeline,
   resumeStep,
 } from "./a2a/callback-handler";
+import { resolveTemplate, listTemplates } from "./a2a/template-loader";
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -202,10 +203,41 @@ app.get("/api/agents", (_req, res) => {
   }));
 });
 
+// ── API: Pipeline Templates ───────────────────────────────────────────────
+
+app.get("/api/templates", (_req, res) => {
+  try {
+    res.json(listTemplates());
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+
 // ── API: Pipeline CRUD ─────────────────────────────────────────────────────
 
 app.post("/api/pipelines", (req, res) => {
-  const { name, agents } = req.body;
+  const { name, agents, template_name } = req.body;
+
+  if (template_name) {
+    const template = resolveTemplate(template_name);
+    if (!template) {
+      return res.status(400).json({ error: `Unknown template: ${template_name}` });
+    }
+    const id = uuidv4();
+    const pipelineName = name || `${template_name} Pipeline`;
+    const pipelineAgents = template.agents;
+    db.prepare("INSERT INTO pipelines (id, name, agents, template_name) VALUES (?, ?, ?, ?)")
+      .run(id, pipelineName, JSON.stringify(pipelineAgents), template_name);
+    return res.json({
+      id,
+      name: pipelineName,
+      agents: pipelineAgents,
+      template_name,
+      default_prompt: template.default_prompt,
+    });
+  }
+
   const id = uuidv4();
   db.prepare("INSERT INTO pipelines (id, name, agents) VALUES (?, ?, ?)").run(id, name || "Untitled", JSON.stringify(agents));
   res.json({ id, name, agents });
