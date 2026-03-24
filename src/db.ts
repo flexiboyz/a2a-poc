@@ -18,6 +18,18 @@ mkdirSync(resolve(__dirname, "../data"), { recursive: true });
 const db: import("better-sqlite3").Database = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 
+// ── Migrations (safe to re-run) ────────────────────────────────────────────
+const migrations = [
+  "ALTER TABLE run_steps ADD COLUMN input_tokens INTEGER DEFAULT 0",
+  "ALTER TABLE run_steps ADD COLUMN output_tokens INTEGER DEFAULT 0",
+  "ALTER TABLE run_steps ADD COLUMN total_tokens INTEGER DEFAULT 0",
+  "ALTER TABLE run_steps ADD COLUMN estimated_cost REAL DEFAULT 0",
+  "ALTER TABLE run_steps ADD COLUMN retry_token_overhead INTEGER DEFAULT 0",
+];
+for (const sql of migrations) {
+  try { db.exec(sql); } catch { /* column already exists */ }
+}
+
 // ── Schema ─────────────────────────────────────────────────────────────────
 
 db.exec(`
@@ -46,7 +58,12 @@ db.exec(`
     attempt INTEGER NOT NULL DEFAULT 0,
     validation_errors TEXT, -- JSON: array of { attempt, errors[], raw } per failed attempt
     started_at TEXT,
-    ended_at TEXT
+    ended_at TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    estimated_cost REAL DEFAULT 0,
+    retry_token_overhead INTEGER DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS backlog_tickets (
