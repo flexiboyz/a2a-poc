@@ -37,11 +37,25 @@ db.exec(`
     run_id TEXT NOT NULL REFERENCES runs(id),
     agent_name TEXT NOT NULL,
     step_order INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending', -- pending | running | completed | failed
+    status TEXT NOT NULL DEFAULT 'pending', -- pending | running | completed | failed | waiting_user
     output TEXT,
+    attempt INTEGER NOT NULL DEFAULT 0,
+    validation_errors TEXT, -- JSON: array of { attempt, errors[], raw } per failed attempt
     started_at TEXT,
     ended_at TEXT
   );
 `);
+
+// ── Migrations ──────────────────────────────────────────────────────────────
+
+// Add attempt + validation_errors columns if missing (for existing DBs)
+const columns = db.prepare("PRAGMA table_info(run_steps)").all() as { name: string }[];
+const colNames = columns.map(c => c.name);
+if (!colNames.includes("attempt")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0");
+}
+if (!colNames.includes("validation_errors")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN validation_errors TEXT");
+}
 
 export default db;
