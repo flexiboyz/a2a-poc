@@ -110,28 +110,32 @@ if (!runColNames.includes("replay_from_step")) {
   db.exec("ALTER TABLE runs ADD COLUMN replay_from_step INTEGER");
 }
 
+// Add group_id and group_order columns to run_steps if missing
+if (!colNames.includes("group_id")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN group_id TEXT");
+}
+if (!colNames.includes("group_order")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN group_order INTEGER");
+}
+
+// Create run_groups table for parallel execution tracking
+db.exec(`
+  CREATE TABLE IF NOT EXISTS run_groups (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    group_order INTEGER NOT NULL,
+    failure_strategy TEXT DEFAULT 'fail_all',
+    status TEXT DEFAULT 'pending',
+    merged_output TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`);
+
 // Add template_name column to pipelines table if missing
 const pipelineColumns = db.prepare("PRAGMA table_info(pipelines)").all() as { name: string }[];
 const pipelineColNames = pipelineColumns.map(c => c.name);
 if (!pipelineColNames.includes("template_name")) {
   db.exec("ALTER TABLE pipelines ADD COLUMN template_name TEXT");
-}
-
-// ── Token/cost tracking columns ─────────────────────────────────────────────
-if (!colNames.includes("input_tokens")) {
-  db.exec("ALTER TABLE run_steps ADD COLUMN input_tokens INTEGER");
-}
-if (!colNames.includes("output_tokens")) {
-  db.exec("ALTER TABLE run_steps ADD COLUMN output_tokens INTEGER");
-}
-if (!colNames.includes("total_tokens")) {
-  db.exec("ALTER TABLE run_steps ADD COLUMN total_tokens INTEGER");
-}
-if (!colNames.includes("estimated_cost")) {
-  db.exec("ALTER TABLE run_steps ADD COLUMN estimated_cost REAL");
-}
-if (!colNames.includes("retry_token_overhead")) {
-  db.exec("ALTER TABLE run_steps ADD COLUMN retry_token_overhead INTEGER DEFAULT 0");
 }
 
 export default db;

@@ -26,7 +26,9 @@ export type CallbackEvent =
   | "on_change_request"
   | "on_pipeline_suggestion"
   | "on_validation_fail"
-  | "on_validation_fail_final";
+  | "on_validation_fail_final"
+  | "on_group_complete"
+  | "on_group_partial_fail";
 
 export type CallbackAction = string | { action: string; [key: string]: unknown };
 
@@ -50,6 +52,7 @@ export interface CallbackContext {
   agentEmoji: string;
   agentSlug: string;
   agentNames: string[];
+  groupId?: string | null;
   broadcast: (runId: string, data: any) => void;
   pendingInputs: Map<string, {
     resolve: (reply: string) => void;
@@ -86,6 +89,7 @@ let _config: CallbacksConfig | null = null;
 const VALID_CALLBACK_EVENTS: CallbackEvent[] = [
   "on_done", "on_fail", "on_await_user", "on_change_request",
   "on_pipeline_suggestion", "on_validation_fail", "on_validation_fail_final",
+  "on_group_complete", "on_group_partial_fail",
 ];
 
 const VALID_ACTIONS = [
@@ -571,6 +575,54 @@ function parsePipelineSuggestion(raw: string): PipelineSuggestion | null {
   } catch { /* not valid JSON either */ }
 
   return null;
+}
+
+/** on_group_complete: all agents in a parallel group succeeded */
+export function handleGroupComplete(
+  ctx: CallbackContext,
+  groupAgents: string[],
+  mergedOutput: string,
+): CallbackResult {
+  const cb = resolveCallback(ctx.agentName, "on_group_complete");
+  ctx.broadcast(ctx.runId, {
+    type: "group-completed",
+    agents: groupAgents,
+    groupId: ctx.groupId,
+    mergedOutput: mergedOutput.slice(0, 500),
+  });
+  if (cb.action === "notify_user") {
+    ctx.broadcast(ctx.runId, {
+      type: "group-notify",
+      agents: groupAgents,
+      message: `Group [${groupAgents.join(", ")}] completed successfully.`,
+    });
+  }
+  return { outcome: "continue" };
+}
+
+/** on_group_partial_fail: some agents in a parallel group failed (continue_partial strategy) */
+export function handleGroupPartialFail(
+  ctx: CallbackContext,
+  groupAgents: string[],
+  failedAgents: string[],
+  mergedOutput: string,
+): CallbackResult {
+  const cb = resolveCallback(ctx.agentName, "on_group_partial_fail");
+  ctx.broadcast(ctx.runId, {
+    type: "group-partial-fail",
+    agents: groupAgents,
+    failedAgents,
+    groupId: ctx.groupId,
+    mergedOutput: mergedOutput.slice(0, 500),
+  });
+  if (cb.action === "notify_user") {
+    ctx.broadcast(ctx.runId, {
+      type: "group-notify",
+      agents: groupAgents,
+      message: `Group [${groupAgents.join(", ")}] partially failed. Failed: [${failedAgents.join(", ")}].`,
+    });
+  }
+  return { outcome: "continue" };
 }
 
 /** Resume step after escalation fix/retry */
