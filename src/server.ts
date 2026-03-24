@@ -847,7 +847,7 @@ async function executeAgent(
           // In a group: return failed result instead of escalating
           db.prepare("UPDATE run_steps SET status = 'failed', output = ?, validation_errors = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
             .run(output, JSON.stringify([{ attempt, errors: validationResult.errors, raw: validationResult.raw }]), runId, stepOrder);
-          broadcast(runId, { type: "step-failed", agent: agentName, step: stepOrder, emoji: agentDef.emoji, output: "Validation failed" });
+          broadcast(runId, { type: "step-failed", agent: agentName, step: stepOrder, emoji: agentDef.emoji, output: `Validation failed:\n${JSON.stringify(validationResult.errors, null, 2)}\n\n--- Raw output ---\n${output}` });
           return { agentName, status: "failed", output: `Validation failed: ${JSON.stringify(validationResult.errors)}` };
         }
 
@@ -1146,7 +1146,7 @@ async function executeSMPipeline(runId: string, pipelineId: string, input: strin
   if (result.kind === "task" && result.status?.state === "failed") {
     const errorMsg = result.status.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "WorkflowMaster failed";
     db.prepare("UPDATE run_steps SET status = 'failed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = 0").run(errorMsg, runId);
-    broadcast(runId, { type: "step-failed", agent: "WorkflowMaster", step: 0, emoji: "🏗️", error: errorMsg });
+    broadcast(runId, { type: "step-failed", agent: "WorkflowMaster", step: 0, emoji: "🏗️", output: errorMsg });
     throw new Error(`WorkflowMaster failed: ${errorMsg}`);
   }
 
