@@ -1,0 +1,27 @@
+# Callback definitions for A2A pipeline orchestrator
+# Replaces hardcoded if/else chains in executePipeline()
+
+defaults:
+  on_done: next_agent
+  on_fail: notify_user
+  on_await_user: notify_user
+  on_change_request:
+    action: call_agent
+    agent: Assembler
+  on_pipeline_suggestion: pause_and_notify_user
+  on_validation_fail:
+    action: retry_agent
+    max: 3
+  on_validation_fail_final: escalate_to_user
+
+# Per-agent overrides — agents can customize any default callback
+overrides: {}
+  # Example:
+  # Spark:
+  #   on_fail:
+  #     action: retry_agent
+  #     max: 2
+  # Ghost:
+  #   on_validation_fail:
+  #     action: retry_agent
+  #     max: 5
