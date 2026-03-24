@@ -59,6 +59,30 @@ db.exec(`
     priority TEXT DEFAULT 'medium',
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS webhook_configs (
+    id TEXT PRIMARY KEY,
+    pipeline_id TEXT REFERENCES pipelines(id),
+    channel_type TEXT NOT NULL DEFAULT 'generic',
+    webhook_url TEXT NOT NULL,
+    event_filters TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id TEXT PRIMARY KEY,
+    webhook_config_id TEXT NOT NULL REFERENCES webhook_configs(id),
+    run_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    http_status INTEGER,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    delivered_at TEXT
+  );
 `);
 
 // ── Migrations ──────────────────────────────────────────────────────────────

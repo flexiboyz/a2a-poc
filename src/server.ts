@@ -12,6 +12,7 @@ import express from "express";
 import { v4 as uuidv4 } from "uuid";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { dispatchWebhookEvent } from "./webhook/dispatcher.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -105,6 +106,16 @@ function broadcast(runId: string, data: any) {
   const clients = sseClients.get(runId) ?? [];
   for (const res of clients) {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
+  }
+
+  // Dispatch to webhook subscribers (fire-and-forget, non-blocking)
+  try {
+    const eventType = data?.type as string | undefined;
+    if (eventType) {
+      dispatchWebhookEvent(runId, eventType, data);
+    }
+  } catch {
+    // Webhook failures must never break the pipeline
   }
 }
 
