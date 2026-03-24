@@ -1,6 +1,5 @@
 import { z } from "zod";
 import YAML from "js-yaml";
-import { CommonHeaderSchema } from "./common.js";
 import { WorkflowMasterSchema } from "./workflowmaster.js";
 import { CipherSchema } from "./cipher.js";
 import { AssemblerSchema } from "./assembler.js";
@@ -18,7 +17,7 @@ export { HammerSchema } from "./hammer.js";
 export { PrismSchema } from "./prism.js";
 export { BastionSchema } from "./bastion.js";
 
-const agentSchemas: Record<string, z.ZodType> = {
+const agentSchemas = {
   WorkflowMaster: WorkflowMasterSchema,
   Cipher: CipherSchema,
   Assembler: AssemblerSchema,
@@ -26,18 +25,23 @@ const agentSchemas: Record<string, z.ZodType> = {
   Hammer: HammerSchema,
   Prism: PrismSchema,
   Bastion: BastionSchema,
-};
+} as const;
+
+type AgentName = keyof typeof agentSchemas;
 
 export type ValidationResult =
   | { success: true; data: unknown }
   | { success: false; errors: z.ZodError };
 
+function isAgentName(name: string): name is AgentName {
+  return name in agentSchemas;
+}
+
 export function validateAgentOutput(
   agentName: string,
   yamlString: string
 ): ValidationResult {
-  const schema = agentSchemas[agentName];
-  if (!schema) {
+  if (!isAgentName(agentName)) {
     return {
       success: false,
       errors: new z.ZodError([
@@ -49,6 +53,8 @@ export function validateAgentOutput(
       ]),
     };
   }
+
+  const schema = agentSchemas[agentName];
 
   let parsed: unknown;
   try {

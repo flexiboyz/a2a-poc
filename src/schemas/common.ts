@@ -23,7 +23,7 @@ export const CommonHeaderSchema = z.object({
   iteration: z.number().int().positive(),
   status: StatusSchema,
   waiting_reason: z.string().nullable().optional(),
-  out_of_scope: z.array(OutOfScopeItemSchema).optional().default([]),
+  out_of_scope: z.array(OutOfScopeItemSchema).default([]),
   pipeline_suggestion: PipelineSuggestionSchema,
 });
 
