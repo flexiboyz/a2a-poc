@@ -523,6 +523,40 @@
       renderPipeline();
     };
 
+    window.replayPipeline = async (runId, pickStep) => {
+      let fromStep = 0;
+      if (pickStep) {
+        const steps = pipeline.map((a, i) => `${i}: ${a.emoji} ${a.name}`).join('\n');
+        const val = prompt(`Replay from which step?\n\n${steps}`, '0');
+        if (val === null) return;
+        fromStep = parseInt(val, 10) || 0;
+      }
+      const newInput = inputEl.value;
+      outputEl.innerHTML = '<p class="output-empty"><span class="spinner"></span> Replaying pipeline...</p>';
+      const rRes = await fetch(`${basePath}/api/runs/${runId}/replay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: newInput, from_step: fromStep }),
+      });
+      const { runId: newRunId, agents: agentList } = await rRes.json();
+      outputEl.innerHTML = '';
+      agentList.forEach((name, i) => {
+        const a = agents.find(x => x.name === name);
+        const isCopied = i < fromStep;
+        outputEl.innerHTML += `
+          <div class="step-result ${isCopied ? 'completed' : ''}" id="step-${i}">
+            <div class="step-header">
+              <span>${a?.emoji || '?'}</span>
+              <strong>${name}</strong>
+              <span class="badge ${isCopied ? 'badge-completed' : 'badge-pending'}">${isCopied ? 'copied' : 'pending'}</span>
+            </div>
+            <div class="step-output" style="color: #444;">${isCopied ? 'Copied from original run' : 'Waiting...'}</div>
+          </div>`;
+      });
+      const evtSource = new EventSource(`${basePath}/api/runs/${newRunId}/stream`);
+      setupSSE(evtSource, newRunId);
+    };
+
     // ── Random Pipeline ──────────────────────────────────────────
     document.getElementById('btn-random').addEventListener('click', async () => {
       outputEl.innerHTML = '<p class="output-empty"><span class="spinner"></span> Launching random pipeline...</p>';
@@ -775,7 +809,12 @@
         }
 
         if (data.type === 'pipeline-completed') {
-          outputEl.innerHTML += '<div class="pipeline-done">✅ Pipeline completed!</div>';
+          outputEl.innerHTML += `<div class="pipeline-done">✅ Pipeline completed!
+            <div style="margin-top:0.8rem;display:flex;gap:0.5rem;justify-content:center;">
+              <button onclick="replayPipeline('${runId}')" class="btn btn-run" style="font-size:0.8rem;padding:0.5rem 1rem;">🔁 Replay</button>
+              <button onclick="replayPipeline('${runId}', true)" class="btn btn-clear" style="font-size:0.8rem;padding:0.5rem 1rem;">🔁 Replay from step…</button>
+            </div>
+          </div>`;
           evtSource.close();
           btnRun.disabled = false;
         }

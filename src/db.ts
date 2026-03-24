@@ -73,4 +73,14 @@ if (!colNames.includes("validation_errors")) {
   db.exec("ALTER TABLE run_steps ADD COLUMN validation_errors TEXT");
 }
 
+// Add replay columns to runs table if missing
+const runColumns = db.prepare("PRAGMA table_info(runs)").all() as { name: string }[];
+const runColNames = runColumns.map(c => c.name);
+if (!runColNames.includes("replay_of")) {
+  db.exec("ALTER TABLE runs ADD COLUMN replay_of TEXT");
+}
+if (!runColNames.includes("replay_from_step")) {
+  db.exec("ALTER TABLE runs ADD COLUMN replay_from_step INTEGER");
+}
+
 export default db;

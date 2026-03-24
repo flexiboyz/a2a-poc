@@ -171,6 +171,8 @@ app.get("/api/runs/:id", (req, res) => {
   const pending = pendingInputs.get(req.params.id);
   res.json({
     ...run,
+    replay_of: run.replay_of ?? null,
+    replay_from_step: run.replay_from_step ?? null,
     steps: steps.map(s => ({ ...s, validation_errors: s.validation_errors ? JSON.parse(s.validation_errors) : null })),
     pendingInput: pending ? { step: pending.stepIndex, question: pending.question, agent: pending.agentSlug, isEscalation: pending.isEscalation ?? false } : null,
   });
@@ -220,6 +222,46 @@ app.post("/api/runs/:id/reply", async (req, res) => {
   }
 
   res.json({ ok: true });
+});
+
+// ── API: Replay a completed run ───────────────────────────────────────────
+
+app.post("/api/runs/:id/replay", async (req, res) => {
+  const originalRun = db.prepare("SELECT * FROM runs WHERE id = ?").get(req.params.id) as any;
+  if (!originalRun) return res.status(404).json({ error: "Run not found" });
+  if (originalRun.status === "running") return res.status(400).json({ error: "Cannot replay a running pipeline" });
+
+  const pipeline = db.prepare("SELECT * FROM pipelines WHERE id = ?").get(originalRun.pipeline_id) as any;
+  if (!pipeline) return res.status(404).json({ error: "Pipeline not found" });
+
+  const agents: string[] = JSON.parse(pipeline.agents);
+  const fromStep = typeof req.body.from_step === "number" ? Math.max(0, Math.min(req.body.from_step, agents.length - 1)) : 0;
+  const input = req.body.input ?? originalRun.input;
+
+  const runId = uuidv4();
+  db.prepare("INSERT INTO runs (id, pipeline_id, status, input, replay_of, replay_from_step) VALUES (?, ?, 'running', ?, ?, ?)").run(runId, pipeline.id, input, req.params.id, fromStep);
+
+  // Copy completed steps from original run (steps before fromStep)
+  if (fromStep > 0) {
+    const originalSteps = db.prepare("SELECT * FROM run_steps WHERE run_id = ? AND step_order < ? ORDER BY step_order").all(req.params.id, fromStep) as any[];
+    for (const step of originalSteps) {
+      db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status, output, started_at, ended_at) VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)").run(uuidv4(), runId, step.agent_name, step.step_order, step.output, step.started_at, step.ended_at);
+    }
+  }
+
+  // Create pending steps for remaining agents
+  for (let i = fromStep; i < agents.length; i++) {
+    db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')").run(uuidv4(), runId, agents[i], i);
+  }
+
+  res.json({ runId, status: "running", agents, replayOf: req.params.id, fromStep });
+
+  // Execute pipeline starting from fromStep
+  executePipeline(runId, agents, input, fromStep).catch((err) => {
+    console.error(`[orchestrator] Replay pipeline ${runId} failed:`, err);
+    db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(runId);
+    broadcast(runId, { type: "pipeline-failed", error: err.message });
+  });
 });
 
 // ── API: Backlog tickets ──────────────────────────────────────────────────
@@ -397,8 +439,8 @@ function extractOutput(events: any[], result: any): string {
 
 // ── Pipeline Orchestrator ──────────────────────────────────────────────────
 
-async function executePipeline(runId: string, agentNames: string[], input: string) {
-  for (let i = 0; i < agentNames.length; i++) {
+async function executePipeline(runId: string, agentNames: string[], input: string, startFrom = 0) {
+  for (let i = startFrom; i < agentNames.length; i++) {
     const agentName = agentNames[i]!;
     const agentDef = AGENTS.find((a) => a.name === agentName);
     if (!agentDef) throw new Error(`Unknown agent: ${agentName}`);
