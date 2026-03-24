@@ -58,10 +58,16 @@ function generateFix(error: StructuredError): string {
  * Two-step validation: parse YAML → validate header → validate full schema.
  */
 export function validate(agentName: string, yamlString: string): ValidateResult {
+  // Strip markdown YAML fences if present (```yaml ... ```)
+  let cleanYaml = yamlString.trim();
+  if (cleanYaml.startsWith("```")) {
+    cleanYaml = cleanYaml.replace(/^```(?:ya?ml)?\s*\n?/, "").replace(/\n?```\s*$/, "").trim();
+  }
+
   // Step 1: Parse YAML
   let parsed: unknown;
   try {
-    parsed = YAML.load(yamlString, { schema: YAML.DEFAULT_SCHEMA });
+    parsed = YAML.load(cleanYaml, { schema: YAML.DEFAULT_SCHEMA });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return {

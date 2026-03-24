@@ -56,9 +56,15 @@ export function validateAgentOutput(
 
   const schema = agentSchemas[agentName]!;
 
+  // Strip markdown YAML fences if present (```yaml ... ```)
+  let cleanYaml = yamlString.trim();
+  if (cleanYaml.startsWith("```")) {
+    cleanYaml = cleanYaml.replace(/^```(?:ya?ml)?\s*\n?/, "").replace(/\n?```\s*$/, "").trim();
+  }
+
   let parsed: unknown;
   try {
-    parsed = YAML.load(yamlString);
+    parsed = YAML.load(cleanYaml);
   } catch (e) {
     return {
       success: false,
