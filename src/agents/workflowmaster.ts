@@ -23,6 +23,8 @@ import {
   UserBuilder,
 } from "@a2a-js/sdk/server/express";
 
+import { selfValidateOutput } from "./self-validate.js";
+
 // ── Config ────────────────────────────────────────────────────────────────
 
 const GATEWAY_URL = process.env["OPENCLAW_GATEWAY_URL"] ?? "http://127.0.0.1:18789";
@@ -141,8 +143,18 @@ class WorkflowMasterExecutor implements AgentExecutor {
 
     try {
       console.log(`[🏗️ WorkflowMaster] Calling ACP Claude via Gateway...`);
-      const output = await invokeGateway(fullBrief);
-      console.log(`[🏗️ WorkflowMaster] → completed ✅ (${output.length} chars)`);
+      const rawOutput = await invokeGateway(fullBrief);
+      console.log(`[🏗️ WorkflowMaster] → gateway done (${rawOutput.length} chars)`);
+
+      // Self-validate output against Zod schema (§11.4)
+      const { finalOutput: output, attempts, selfValidated } = await selfValidateOutput(
+        "WorkflowMaster",
+        rawOutput,
+        (feedback) => invokeGateway(`${SM_BRIEF}\n\n${feedback}`),
+      );
+      if (attempts > 0) {
+        console.log(`[🏗️ WorkflowMaster] Self-validation: ${selfValidated ? "passed" : "failed"} after ${attempts} attempt(s)`);
+      }
 
       // Publish YAML output as A2A artifact with proper mime type (§9.3)
       const artifactEvent: TaskArtifactUpdateEvent = {

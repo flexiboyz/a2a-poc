@@ -23,6 +23,8 @@ import {
   UserBuilder,
 } from "@a2a-js/sdk/server/express";
 
+import { selfValidateOutput } from "./self-validate.js";
+
 // ── Config ────────────────────────────────────────────────────────────────
 
 const GATEWAY_URL = process.env["OPENCLAW_GATEWAY_URL"] ?? "http://127.0.0.1:18789";
@@ -115,8 +117,18 @@ class CipherExecutor implements AgentExecutor {
 
     try {
       console.log(`[🔐 Cipher] Calling ACP Claude via Gateway...`);
-      const output = await invokeGateway(fullBrief);
-      console.log(`[🔐 Cipher] → completed ✅ (${output.length} chars)`);
+      const rawOutput = await invokeGateway(fullBrief);
+      console.log(`[🔐 Cipher] → gateway done (${rawOutput.length} chars)`);
+
+      // Self-validate output against Zod schema (§11.4)
+      const { finalOutput: output, attempts, selfValidated } = await selfValidateOutput(
+        "Cipher",
+        rawOutput,
+        (feedback) => invokeGateway(`${CIPHER_BRIEF}\n\n${feedback}`),
+      );
+      if (attempts > 0) {
+        console.log(`[🔐 Cipher] Self-validation: ${selfValidated ? "passed" : "failed"} after ${attempts} attempt(s)`);
+      }
 
       // Publish YAML output as A2A artifact with proper mime type (§9.3)
       const artifactEvent: TaskArtifactUpdateEvent = {
