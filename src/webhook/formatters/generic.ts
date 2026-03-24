@@ -1,7 +1,3 @@
-/**
- * Generic webhook formatter — plain JSON payload for any webhook consumer.
- */
-
 export function formatGeneric(eventType: string, data: any, runId: string): Record<string, any> {
   return {
     event: eventType,

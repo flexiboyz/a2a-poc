@@ -57,6 +57,8 @@ import {
   getTotalStepCount,
   getAllAgentNames,
 } from "./a2a/parallel";
+import { startConfigWatcher, stopConfigWatcher } from "./a2a/config-watcher.js";
+import { resolveTemplate, listTemplates } from "./a2a/template-loader";
 
 // ── Config ─────────────────────────────────────────────────────────────────
 

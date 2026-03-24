@@ -131,4 +131,11 @@ db.exec(`
   );
 `);
 
+// Add template_name column to pipelines table if missing
+const pipelineColumns = db.prepare("PRAGMA table_info(pipelines)").all() as { name: string }[];
+const pipelineColNames = pipelineColumns.map(c => c.name);
+if (!pipelineColNames.includes("template_name")) {
+  db.exec("ALTER TABLE pipelines ADD COLUMN template_name TEXT");
+}
+
 export default db;
