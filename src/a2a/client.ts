@@ -175,6 +175,8 @@ function dispatchEvent(
 
   if (isArtifactUpdate(event)) {
     callbacks?.onArtifactUpdate?.(event);
+    // Artifact updates carry data but don't replace the final result
+    console.log(`[a2a-client] Artifact update: ${event.artifact?.artifactId ?? "unknown"} (lastChunk: ${event.lastChunk ?? false})`);
     return lastResult ?? ({} as Task);
   }
 
