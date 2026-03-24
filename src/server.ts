@@ -42,6 +42,7 @@ import {
   abortPipeline,
   resumeStep,
 } from "./a2a/callback-handler";
+import { resolveTemplate, listTemplates } from "./a2a/template-loader";
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -203,10 +204,41 @@ app.get("/api/agents", (_req, res) => {
   }));
 });
 
+// ── API: Pipeline Templates ───────────────────────────────────────────────
+
+app.get("/api/templates", (_req, res) => {
+  try {
+    res.json(listTemplates());
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+
 // ── API: Pipeline CRUD ─────────────────────────────────────────────────────
 
 app.post("/api/pipelines", (req, res) => {
-  const { name, agents } = req.body;
+  const { name, agents, template_name } = req.body;
+
+  if (template_name) {
+    const template = resolveTemplate(template_name);
+    if (!template) {
+      return res.status(400).json({ error: `Unknown template: ${template_name}` });
+    }
+    const id = uuidv4();
+    const pipelineName = name || `${template_name} Pipeline`;
+    const pipelineAgents = template.agents;
+    db.prepare("INSERT INTO pipelines (id, name, agents, template_name) VALUES (?, ?, ?, ?)")
+      .run(id, pipelineName, JSON.stringify(pipelineAgents), template_name);
+    return res.json({
+      id,
+      name: pipelineName,
+      agents: pipelineAgents,
+      template_name,
+      default_prompt: template.default_prompt,
+    });
+  }
+
   const id = uuidv4();
   db.prepare("INSERT INTO pipelines (id, name, agents) VALUES (?, ?, ?)").run(id, name || "Untitled", JSON.stringify(agents));
   res.json({ id, name, agents });
@@ -523,13 +555,20 @@ function extractOutput(events: any[], result: any): string {
 // ── Pipeline Orchestrator ──────────────────────────────────────────────────
 
 async function executePipeline(runId: string, agentNames: string[], input: string, startFrom = 0) {
+  // Resolve template overrides if pipeline was created from a template
+  const run = db.prepare("SELECT pipeline_id FROM runs WHERE id = ?").get(runId) as any;
+  const pipeline = run ? db.prepare("SELECT template_name FROM pipelines WHERE id = ?").get(run.pipeline_id) as any : null;
+  const templateName = pipeline?.template_name;
+  const template = templateName ? resolveTemplate(templateName) : null;
+  const templateOverrides = template?.callback_overrides;
+
   for (let i = startFrom; i < agentNames.length; i++) {
     const agentName = agentNames[i]!;
     const agentDef = AGENTS.find((a) => a.name === agentName);
     if (!agentDef) throw new Error(`Unknown agent: ${agentName}`);
 
     const slug = agentName.toLowerCase();
-    const maxAttempts = getMaxRetries(agentName);
+    const maxAttempts = getMaxRetries(agentName, templateOverrides);
 
     // Build callback context for this step
     const ctx: CallbackContext = {
@@ -541,6 +580,7 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
       agentNames,
       broadcast,
       pendingInputs,
+      ...(templateOverrides ? { templateOverrides } : {}),
     };
 
     // Update step → running

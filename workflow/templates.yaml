@@ -1,0 +1,77 @@
+# Pipeline templates — pre-defined callback sets per pipeline type (§11.5)
+#
+# Callback precedence: agent overrides > template overrides > defaults
+
+templates:
+  Standard:
+    description: "Default pipeline — Cipher analyzes, Assembler builds, Sentinel reviews"
+    agents:
+      - Cipher
+      - Assembler
+      - Sentinel
+    callback_overrides: {}
+    default_prompt: "Analyze and implement this task following standard workflow."
+
+  Design:
+    description: "Design-focused pipeline — includes Prism for UX/design review"
+    agents:
+      - Cipher
+      - Prism
+      - Assembler
+      - Sentinel
+    callback_overrides:
+      Prism:
+        on_done: notify_user
+    default_prompt: "Analyze, design, and implement this task with UX considerations."
+
+  Legal:
+    description: "Legal/research pipeline — Hammer does web research before analysis"
+    agents:
+      - Hammer
+      - Cipher
+      - Assembler
+      - Sentinel
+    callback_overrides:
+      Hammer:
+        on_fail:
+          action: retry_agent
+          max: 5
+    default_prompt: "Research external context, then analyze and implement this task."
+
+  Security:
+    description: "Security-focused pipeline — Bastion audits infrastructure access"
+    agents:
+      - Cipher
+      - Assembler
+      - Bastion
+      - Sentinel
+    callback_overrides:
+      Bastion:
+        on_done: notify_user
+        on_fail:
+          action: retry_agent
+          max: 4
+    default_prompt: "Analyze, implement, and security-audit this task."
+
+  Full:
+    description: "Full pipeline — all agents involved"
+    agents:
+      - Hammer
+      - Cipher
+      - Prism
+      - Assembler
+      - Bastion
+      - Sentinel
+    callback_overrides:
+      Hammer:
+        on_fail:
+          action: retry_agent
+          max: 5
+      Prism:
+        on_done: notify_user
+      Bastion:
+        on_done: notify_user
+        on_fail:
+          action: retry_agent
+          max: 4
+    default_prompt: "Research, analyze, design, implement, security-audit, and review this task."
