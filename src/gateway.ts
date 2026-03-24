@@ -1,14 +1,15 @@
 /**
- * Multi-model gateway via OpenRouter API.
+ * Multi-model gateway via OpenRouter SDK.
  *
  * Each agent can use a different model. Config via AGENT_MODELS map.
- * Falls back to OpenClaw Gateway if OPENROUTER_API_KEY is not set.
+ * Uses @openrouter/sdk for proper streaming + token tracking.
  */
+
+import { OpenRouter } from "@openrouter/sdk";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
 const OPENROUTER_API_KEY = process.env["OPENROUTER_API_KEY"] ?? "";
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 // Fallback to OpenClaw Gateway
 const GATEWAY_URL = process.env["OPENCLAW_GATEWAY_URL"] ?? "http://127.0.0.1:18789";
@@ -70,55 +71,48 @@ function getModelForAgent(agentName: string): string {
   return AGENT_MODELS[agentName] ?? AGENT_MODELS["default"] ?? "google/gemini-2.5-flash";
 }
 
-// ── OpenRouter invocation ───────────────────────────────────────────────────
+// ── OpenRouter SDK client (singleton) ───────────────────────────────────────
+
+let _client: OpenRouter | null = null;
+function getClient(): OpenRouter {
+  if (!_client) {
+    _client = new OpenRouter({ apiKey: OPENROUTER_API_KEY });
+  }
+  return _client;
+}
+
+// ── OpenRouter invocation via SDK ───────────────────────────────────────────
 
 async function invokeOpenRouter(task: string, agentName: string): Promise<GatewayResult> {
   const model = getModelForAgent(agentName);
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 180_000);
+  const client = getClient();
 
   try {
-    const res = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-        "HTTP-Referer": "https://rockeros.rockerone.io",
-        "X-Title": "A2A Pipeline POC",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "user", content: task },
-        ],
-        max_tokens: 4096,
-        temperature: 0.3,
-      }),
-      signal: controller.signal,
+    const result = client.callModel({
+      model,
+      input: [{ role: "user", content: task }],
     });
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`OpenRouter ${res.status}: ${text.slice(0, 500)}`);
-    }
+    // Get full response (includes usage)
+    const response = await result.getResponse();
+    const output = (response as any).output
+      ?.filter((o: any) => o.type === "message")
+      ?.flatMap((o: any) => o.content?.filter((c: any) => c.type === "output_text")?.map((c: any) => c.text) ?? [])
+      ?.join("") ?? await result.getText();
 
-    const data = await res.json() as any;
-    const output = data?.choices?.[0]?.message?.content ?? "";
-    const rawUsage = data?.usage;
-    const usedModel = data?.model ?? model;
-
+    const rawUsage = (response as any).usage;
     let usage: TokenUsage;
     if (rawUsage) {
-      const inputTokens = Number(rawUsage.prompt_tokens) || 0;
-      const outputTokens = Number(rawUsage.completion_tokens) || 0;
+      const inputTokens = Number(rawUsage.input_tokens ?? rawUsage.prompt_tokens) || 0;
+      const outputTokens = Number(rawUsage.output_tokens ?? rawUsage.completion_tokens) || 0;
       usage = {
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         total_tokens: inputTokens + outputTokens,
-        estimated_cost: calculateCost(inputTokens, outputTokens, usedModel),
+        estimated_cost: calculateCost(inputTokens, outputTokens, model),
         is_estimated: false,
         retry_token_overhead: 0,
-        model: usedModel,
+        model,
       };
     } else {
       const inputTokens = estimateTokens(task);
@@ -127,23 +121,19 @@ async function invokeOpenRouter(task: string, agentName: string): Promise<Gatewa
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         total_tokens: inputTokens + outputTokens,
-        estimated_cost: calculateCost(inputTokens, outputTokens, usedModel),
+        estimated_cost: calculateCost(inputTokens, outputTokens, model),
         is_estimated: true,
         retry_token_overhead: 0,
-        model: usedModel,
+        model,
       };
     }
 
-    console.log(`[gateway] ${agentName} → ${usedModel} (${usage.input_tokens}+${usage.output_tokens} tokens, $${usage.estimated_cost.toFixed(4)})`);
+    console.log(`[gateway] ${agentName} → ${model} (${usage.input_tokens}+${usage.output_tokens} tokens, $${usage.estimated_cost.toFixed(4)})`);
     return { output, usage };
 
   } catch (err: unknown) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(`OpenRouter invocation timed out (180s) for ${agentName}`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeoutId);
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`OpenRouter error for ${agentName} (${model}): ${msg}`);
   }
 }
 
@@ -182,15 +172,15 @@ async function invokeOpenClawGateway(task: string): Promise<GatewayResult> {
     if (rawUsage && typeof rawUsage === "object" && rawUsage.input_tokens != null) {
       const inputTokens = Number(rawUsage.input_tokens) || 0;
       const outputTokens = Number(rawUsage.output_tokens) || 0;
-      const model = data?.["model"] ?? data?.["result"]?.["model"];
+      const usedModel = data?.["model"] ?? data?.["result"]?.["model"];
       usage = {
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         total_tokens: inputTokens + outputTokens,
-        estimated_cost: calculateCost(inputTokens, outputTokens, model),
+        estimated_cost: calculateCost(inputTokens, outputTokens, usedModel),
         is_estimated: false,
         retry_token_overhead: 0,
-        model,
+        model: usedModel,
       };
     } else {
       const inputTokens = estimateTokens(task);
@@ -216,7 +206,7 @@ async function invokeOpenClawGateway(task: string): Promise<GatewayResult> {
   }
 }
 
-// ── Main export — routes to OpenRouter or OpenClaw Gateway ──────────────────
+// ── Main export — routes to OpenRouter SDK or OpenClaw Gateway ──────────────
 
 export async function invokeGateway(task: string, agentName?: string): Promise<GatewayResult> {
   if (OPENROUTER_API_KEY) {
