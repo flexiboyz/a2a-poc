@@ -786,9 +786,10 @@
           if (el) {
             el.classList.remove('running');
             el.classList.add('failed');
+            stepOutputs[data.step] = data.output || 'No output captured';
             el.querySelector('.badge').className = 'badge badge-failed';
             el.querySelector('.badge').textContent = 'failed';
-            el.querySelector('.step-output').textContent = data.output;
+            el.querySelector('.step-output').innerHTML = `<div style="margin-bottom:0.5rem;color:#ef4444;">${(data.output || 'No output').replace(/</g,'&lt;').replace(/>/g,'&gt;').slice(0, 200)}</div><button onclick="openInspector(${data.step})" style="background:#1e1e2e;color:#ef4444;border:1px solid #2a2a3e;border-radius:6px;padding:4px 12px;font-size:0.75rem;cursor:pointer;">🔍 Inspect Error</button>`;
           }
         }
 
