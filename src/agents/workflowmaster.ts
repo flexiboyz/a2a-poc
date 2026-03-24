@@ -8,7 +8,7 @@
 import { Router } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { AgentCard, Message, AGENT_CARD_PATH } from "@a2a-js/sdk";
-import type { Task } from "@a2a-js/sdk";
+import type { Task, TaskArtifactUpdateEvent } from "@a2a-js/sdk";
 import {
   AgentExecutor,
   RequestContext,
@@ -143,6 +143,21 @@ class WorkflowMasterExecutor implements AgentExecutor {
       console.log(`[🏗️ WorkflowMaster] Calling ACP Claude via Gateway...`);
       const output = await invokeGateway(fullBrief);
       console.log(`[🏗️ WorkflowMaster] → completed ✅ (${output.length} chars)`);
+
+      // Publish YAML output as A2A artifact with proper mime type (§9.3)
+      const artifactEvent: TaskArtifactUpdateEvent = {
+        kind: "artifact-update",
+        taskId: ctx.taskId,
+        contextId: ctx.contextId,
+        lastChunk: true,
+        artifact: {
+          artifactId: uuidv4(),
+          name: "workflowmaster-output",
+          description: "WorkflowMaster qualification output (YAML)",
+          parts: [{ kind: "text", text: output, metadata: { mimeType: "application/x-yaml" } }],
+        },
+      };
+      bus.publish(artifactEvent);
 
       const response: Message = {
         kind: "message",

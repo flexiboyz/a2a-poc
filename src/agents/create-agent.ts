@@ -5,7 +5,7 @@
 import { Router } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { AgentCard, Message, AGENT_CARD_PATH } from "@a2a-js/sdk";
-import type { TaskStatusUpdateEvent, Task } from "@a2a-js/sdk";
+import type { TaskStatusUpdateEvent, Task, TaskArtifactUpdateEvent } from "@a2a-js/sdk";
 import {
   AgentExecutor,
   RequestContext,
@@ -219,14 +219,27 @@ export function createAgentRouter(def: AgentDef, baseUrl: string): Router {
       }
 
       // Standard response (no input required)
+      const outputText = `${def.emoji} **${def.name}** here!\n\nI received: "${text.slice(0, 200)}${text.length > 200 ? "..." : ""}"\n\nMy take as a ${def.description.toLowerCase()}: This is interesting. I'd ${def.skill === "brainstorm" ? "explore bold new angles" : def.skill === "validate" ? "check if this is actually buildable" : "look for what could go wrong"} and pass my findings to the next agent.`;
+
+      // Publish output as A2A artifact with proper mime type (§9.3)
+      const artifactEvent: TaskArtifactUpdateEvent = {
+        kind: "artifact-update",
+        taskId: ctx.taskId,
+        contextId: ctx.contextId,
+        lastChunk: true,
+        artifact: {
+          artifactId: uuidv4(),
+          name: `${def.name.toLowerCase()}-output`,
+          parts: [{ kind: "text", text: outputText, metadata: { mimeType: "text/plain" } }],
+        },
+      };
+      bus.publish(artifactEvent);
+
       const response: Message = {
         kind: "message",
         messageId: uuidv4(),
         role: "agent",
-        parts: [{
-          kind: "text",
-          text: `${def.emoji} **${def.name}** here!\n\nI received: "${text.slice(0, 200)}${text.length > 200 ? "..." : ""}"\n\nMy take as a ${def.description.toLowerCase()}: This is interesting. I'd ${def.skill === "brainstorm" ? "explore bold new angles" : def.skill === "validate" ? "check if this is actually buildable" : "look for what could go wrong"} and pass my findings to the next agent.`,
-        }],
+        parts: [{ kind: "text", text: outputText }],
         contextId: ctx.contextId,
       };
 

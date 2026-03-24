@@ -356,6 +356,41 @@ function processOutOfScope(
   }
 }
 
+// ── Output Extraction (§9.3 — artifact-aware) ────────────────────────────
+
+/**
+ * Extracts agent output preferring A2A artifacts with mimeType metadata.
+ * Falls back to message parts if no artifact found.
+ */
+function extractOutput(events: any[], result: any): string {
+  // Check for artifact events with YAML mimeType
+  for (const event of events) {
+    if (event.kind === "artifact-update" && event.artifact?.parts) {
+      for (const part of event.artifact.parts) {
+        if (part.kind === "text" && part.metadata?.mimeType === "application/x-yaml") {
+          return part.text;
+        }
+      }
+    }
+  }
+
+  // Fallback: extract from artifact parts with any mimeType
+  for (const event of events) {
+    if (event.kind === "artifact-update" && event.artifact?.parts) {
+      const text = event.artifact.parts
+        .filter((p: any) => p.kind === "text")
+        .map((p: any) => p.text)
+        .join("");
+      if (text) return text;
+    }
+  }
+
+  // Fallback: extract from message/task parts
+  return result.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
+    || result.status?.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
+    || "(no output)";
+}
+
 // ── Pipeline Orchestrator ──────────────────────────────────────────────────
 
 async function executePipeline(runId: string, agentNames: string[], input: string) {
@@ -518,8 +553,8 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
         }
       }
 
-      // Normal completion — extract output
-      output = result.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "(no output)";
+      // Normal completion — extract output from artifacts (§9.3) or message parts
+      output = extractOutput(streamResult.events, result);
 
       // ── on_change_request: detect change request markers in output ──
       const changeRequestContext = detectChangeRequest(output);
@@ -686,10 +721,8 @@ async function executeSMPipeline(runId: string, pipelineId: string, input: strin
     throw new Error(`WorkflowMaster failed: ${errorMsg}`);
   }
 
-  // Extract output
-  const smOutput = result.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
-    || result.status?.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
-    || "";
+  // Extract output (§9.3 — artifact-aware)
+  const smOutput = extractOutput(streamResult.events, result);
 
   // Validate against WorkflowMaster schema
   const validationResult = validate("WorkflowMaster", smOutput);
@@ -776,9 +809,7 @@ async function executeSMPipeline(runId: string, pipelineId: string, input: strin
       });
 
       const agentResult = agentStreamResult.result as any;
-      const output = agentResult.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
-        || agentResult.status?.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
-        || "(no output)";
+      const output = extractOutput(agentStreamResult.events, agentResult);
 
       // Validate if schema exists
       const { agentSchemas } = await import("./schemas/index");
