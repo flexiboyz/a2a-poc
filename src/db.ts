@@ -83,4 +83,25 @@ if (!runColNames.includes("replay_from_step")) {
   db.exec("ALTER TABLE runs ADD COLUMN replay_from_step INTEGER");
 }
 
+// Add group_id and group_order columns to run_steps if missing
+if (!colNames.includes("group_id")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN group_id TEXT");
+}
+if (!colNames.includes("group_order")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN group_order INTEGER");
+}
+
+// Create run_groups table for parallel execution tracking
+db.exec(`
+  CREATE TABLE IF NOT EXISTS run_groups (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    group_order INTEGER NOT NULL,
+    failure_strategy TEXT DEFAULT 'fail_all',
+    status TEXT DEFAULT 'pending',
+    merged_output TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`);
+
 export default db;

@@ -7,7 +7,13 @@ const WorkflowMasterOutputSchema = z.object({
     type: z.enum(["code", "design", "legal", "mixed"]),
     estimated_agents: z.number().int().positive(),
   }),
-  pipeline: z.array(z.string()).min(1),
+  pipeline: z.array(z.union([
+    z.string(),
+    z.object({
+      group: z.array(z.string()).min(2),
+      failure_strategy: z.enum(["fail_all", "continue_partial"]).optional(),
+    }),
+  ])).min(1),
   branch: z.string(),
   acceptance_criteria: z.array(z.string()).min(1),
   context_notes: z.string().optional(),
