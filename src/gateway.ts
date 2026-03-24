@@ -6,6 +6,7 @@
  */
 
 import { OpenRouter } from "@openrouter/sdk";
+// JSON Schema conversion — manual since zod-to-json-schema has Zod version issues
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -88,11 +89,71 @@ function getClient(): OpenRouter {
 
 // ── OpenRouter invocation via SDK ───────────────────────────────────────────
 
-async function invokeOpenRouter(task: string, agentName: string): Promise<GatewayResult> {
+async function invokeOpenRouter(task: string, agentName: string, jsonSchema?: Record<string, any>): Promise<GatewayResult> {
   const model = getModelForAgent(agentName);
   const client = getClient();
 
+  // Build response_format if JSON schema provided (structured outputs)
+  let responseFormat: any = undefined;
+  if (jsonSchema) {
+    responseFormat = {
+      type: "json_schema" as const,
+      json_schema: {
+        name: `${agentName}_output`,
+        strict: true,
+        schema: jsonSchema,
+      },
+    };
+    console.log(`[gateway] ${agentName} → structured output enabled (JSON Schema)`);
+  }
+
   try {
+    // Use raw fetch for structured outputs (SDK doesn't support response_format yet)
+    if (responseFormat) {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${getApiKey()}`,
+          "HTTP-Referer": "https://rockeros.rockerone.io",
+          "X-Title": "A2A Pipeline POC",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: task }],
+          max_tokens: 8192,
+          temperature: 0.3,
+          response_format: responseFormat,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`OpenRouter ${res.status}: ${text.slice(0, 500)}`);
+      }
+
+      const data = await res.json() as any;
+      const output = data?.choices?.[0]?.message?.content ?? "";
+      const rawUsage = data?.usage;
+      const usedModel = data?.model ?? model;
+
+      const inputTokens = Number(rawUsage?.prompt_tokens) || estimateTokens(task);
+      const outputTokens = Number(rawUsage?.completion_tokens) || estimateTokens(output);
+      const usage: TokenUsage = {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        total_tokens: inputTokens + outputTokens,
+        estimated_cost: calculateCost(inputTokens, outputTokens, usedModel),
+        is_estimated: !rawUsage,
+        retry_token_overhead: 0,
+        model: usedModel,
+      };
+
+      console.log(`[gateway] ${agentName} → ${usedModel} (structured, ${usage.input_tokens}+${usage.output_tokens} tokens, $${usage.estimated_cost.toFixed(4)})`);
+      return { output, usage };
+    }
+
+    // SDK path (no structured output)
     const result = client.callModel({
       model,
       input: [{ role: "user", content: task }],
@@ -213,9 +274,9 @@ async function invokeOpenClawGateway(task: string): Promise<GatewayResult> {
 
 // ── Main export — routes to OpenRouter SDK or OpenClaw Gateway ──────────────
 
-export async function invokeGateway(task: string, agentName?: string): Promise<GatewayResult> {
+export async function invokeGateway(task: string, agentName?: string, jsonSchema?: Record<string, any>): Promise<GatewayResult> {
   if (getApiKey()) {
-    return invokeOpenRouter(task, agentName ?? "default");
+    return invokeOpenRouter(task, agentName ?? "default", jsonSchema);
   }
   return invokeOpenClawGateway(task);
 }

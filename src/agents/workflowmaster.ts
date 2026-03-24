@@ -25,6 +25,7 @@ import {
 
 import { selfValidateOutput } from "./self-validate.js";
 import { invokeGateway as invokeGatewayShared, accumulateUsage, emptyUsage, type TokenUsage } from "../gateway.js";
+import { WorkflowMasterJsonSchema } from "../schemas/json-schemas.js";
 
 // ── Config ────────────────────────────────────────────────────────────────
 
@@ -114,7 +115,7 @@ class WorkflowMasterExecutor implements AgentExecutor {
     try {
       console.log(`[🏗️ WorkflowMaster] Calling ACP Claude via Gateway...`);
       let cumulativeUsage = emptyUsage();
-      const gatewayResult = await invokeGatewayShared(fullBrief, "WorkflowMaster");
+      const gatewayResult = await invokeGatewayShared(fullBrief, "WorkflowMaster", WorkflowMasterJsonSchema);
       const rawOutput = gatewayResult.output;
       cumulativeUsage = accumulateUsage(cumulativeUsage, gatewayResult.usage);
       console.log(`[🏗️ WorkflowMaster] → gateway done (${rawOutput.length} chars, ${gatewayResult.usage.total_tokens} tokens${gatewayResult.usage.is_estimated ? " est." : ""})`);
@@ -124,7 +125,7 @@ class WorkflowMasterExecutor implements AgentExecutor {
         "WorkflowMaster",
         rawOutput,
         async (feedback) => {
-          const retryResult = await invokeGatewayShared(`${SM_BRIEF}\n\n${feedback}`, "WorkflowMaster");
+          const retryResult = await invokeGatewayShared(`${SM_BRIEF}\n\n${feedback}`, "WorkflowMaster", WorkflowMasterJsonSchema);
           cumulativeUsage = accumulateUsage(cumulativeUsage, retryResult.usage);
           return retryResult.output;
         },

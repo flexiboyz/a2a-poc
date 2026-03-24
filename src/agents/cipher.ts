@@ -25,6 +25,7 @@ import {
 
 import { selfValidateOutput } from "./self-validate.js";
 import { invokeGateway as invokeGatewayShared, accumulateUsage, emptyUsage, type TokenUsage } from "../gateway.js";
+import { CipherJsonSchema } from "../schemas/json-schemas.js";
 
 // ── Config ────────────────────────────────────────────────────────────────
 
@@ -87,7 +88,7 @@ class CipherExecutor implements AgentExecutor {
     try {
       console.log(`[🔐 Cipher] Calling ACP Claude via Gateway...`);
       let cumulativeUsage = emptyUsage();
-      const gatewayResult = await invokeGatewayShared(fullBrief, "Cipher");
+      const gatewayResult = await invokeGatewayShared(fullBrief, "Cipher", CipherJsonSchema);
       const rawOutput = gatewayResult.output;
       cumulativeUsage = accumulateUsage(cumulativeUsage, gatewayResult.usage);
       console.log(`[🔐 Cipher] → gateway done (${rawOutput.length} chars, ${gatewayResult.usage.total_tokens} tokens${gatewayResult.usage.is_estimated ? " est." : ""})`);
@@ -97,7 +98,7 @@ class CipherExecutor implements AgentExecutor {
         "Cipher",
         rawOutput,
         async (feedback) => {
-          const retryResult = await invokeGatewayShared(`${CIPHER_BRIEF}\n\n${feedback}`, "Cipher");
+          const retryResult = await invokeGatewayShared(`${CIPHER_BRIEF}\n\n${feedback}`, "Cipher", CipherJsonSchema);
           cumulativeUsage = accumulateUsage(cumulativeUsage, retryResult.usage);
           return retryResult.output;
         },
