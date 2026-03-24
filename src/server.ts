@@ -104,6 +104,88 @@ const pendingInputs = new Map<string, {
   isEscalation?: boolean;
 }>();
 
+// ── API: List all runs ────────────────────────────────────────────────────
+
+app.get("/api/runs", (_req, res) => {
+  const rows = db.prepare(`
+    SELECT
+      r.id, r.pipeline_id, r.status, r.input, r.created_at,
+      p.name as pipeline_name,
+      (SELECT COUNT(*) FROM run_steps WHERE run_id = r.id) as step_count,
+      (SELECT MIN(started_at) FROM run_steps WHERE run_id = r.id AND started_at IS NOT NULL) as started_at,
+      (SELECT MAX(ended_at) FROM run_steps WHERE run_id = r.id AND ended_at IS NOT NULL) as ended_at,
+      (SELECT GROUP_CONCAT(agent_name, ',') FROM run_steps WHERE run_id = r.id ORDER BY step_order) as agents
+    FROM runs r
+    LEFT JOIN pipelines p ON r.pipeline_id = p.id
+    ORDER BY r.created_at DESC
+  `).all() as any[];
+
+  res.json(rows.map(r => ({
+    ...r,
+    agents: r.agents ? r.agents.split(",") : [],
+    duration_ms: r.started_at && r.ended_at
+      ? new Date(r.ended_at + "Z").getTime() - new Date(r.started_at + "Z").getTime()
+      : null,
+  })));
+});
+
+// ── API: Pipeline metrics ─────────────────────────────────────────────────
+
+app.get("/api/metrics", (_req, res) => {
+  const totals = db.prepare(`
+    SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+      SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
+    FROM runs
+  `).get() as any;
+
+  const durations = db.prepare(`
+    SELECT r.id,
+      (SELECT MIN(started_at) FROM run_steps WHERE run_id = r.id AND started_at IS NOT NULL) as started,
+      (SELECT MAX(ended_at) FROM run_steps WHERE run_id = r.id AND ended_at IS NOT NULL) as ended
+    FROM runs r
+    WHERE r.status = 'completed'
+  `).all() as any[];
+
+  const durationMs = durations
+    .filter(d => d.started && d.ended)
+    .map(d => new Date(d.ended + "Z").getTime() - new Date(d.started + "Z").getTime());
+  const avgDuration = durationMs.length > 0
+    ? Math.round(durationMs.reduce((a, b) => a + b, 0) / durationMs.length)
+    : null;
+
+  const failurePoints = db.prepare(`
+    SELECT agent_name, COUNT(*) as fail_count
+    FROM run_steps
+    WHERE status = 'failed'
+    GROUP BY agent_name
+    ORDER BY fail_count DESC
+    LIMIT 5
+  `).all() as any[];
+
+  const retryStats = db.prepare(`
+    SELECT agent_name, SUM(attempt) as total_retries, COUNT(*) as step_count
+    FROM run_steps
+    WHERE attempt > 1
+    GROUP BY agent_name
+    ORDER BY total_retries DESC
+    LIMIT 5
+  `).all() as any[];
+
+  res.json({
+    total_runs: totals.total,
+    completed: totals.completed,
+    failed: totals.failed,
+    running: totals.running,
+    success_rate: totals.total > 0 ? Math.round((totals.completed / totals.total) * 100) : 0,
+    avg_duration_ms: avgDuration,
+    failure_points: failurePoints,
+    retry_stats: retryStats,
+  });
+});
+
 // ── API: List available agents ─────────────────────────────────────────────
 
 app.get("/api/agents", (_req, res) => {

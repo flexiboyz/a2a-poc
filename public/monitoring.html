@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A2A Pipeline Monitor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+    h1 {
+      font-size: 1.8rem;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(135deg, #7c3aed, #ec4899);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle { color: #666; margin-bottom: 2rem; font-size: 0.9rem; }
+    .subtitle a { color: #7c3aed; text-decoration: none; }
+    .subtitle a:hover { text-decoration: underline; }
+
+    /* ── Tabs ───────────────────────────────────── */
+    .tabs { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+    .tab {
+      padding: 0.5rem 1.2rem;
+      background: #12121a;
+      border: 1px solid #1e1e2e;
+      border-radius: 8px;
+      color: #888;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+    .tab:hover { border-color: #7c3aed; color: #e0e0e0; }
+    .tab.active { background: rgba(124,58,237,0.15); border-color: #7c3aed; color: #7c3aed; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ── Metrics Cards ─────────────────────────── */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+    .metric-card {
+      background: #12121a;
+      border: 1px solid #1e1e2e;
+      border-radius: 12px;
+      padding: 1.2rem;
+      text-align: center;
+    }
+    .metric-card .value {
+      font-size: 2rem;
+      font-weight: 700;
+      margin-bottom: 0.3rem;
+    }
+    .metric-card .label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      color: #666;
+      letter-spacing: 0.05em;
+    }
+    .metric-card .value.green { color: #22c55e; }
+    .metric-card .value.red { color: #ef4444; }
+    .metric-card .value.purple { color: #7c3aed; }
+    .metric-card .value.yellow { color: #fbbf24; }
+
+    /* ── Failure + Retry Tables ─────────────────── */
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem; }
+    .stats-panel {
+      background: #12121a;
+      border: 1px solid #1e1e2e;
+      border-radius: 12px;
+      padding: 1.2rem;
+    }
+    .stats-panel h3 { font-size: 0.85rem; text-transform: uppercase; color: #666; letter-spacing: 0.1em; margin-bottom: 1rem; }
+    .stats-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid #1e1e2e;
+      font-size: 0.85rem;
+    }
+    .stats-row:last-child { border-bottom: none; }
+    .stats-bar {
+      height: 6px;
+      background: #1e1e2e;
+      border-radius: 3px;
+      flex: 1;
+      margin: 0 0.8rem;
+      overflow: hidden;
+    }
+    .stats-bar-fill { height: 100%; border-radius: 3px; }
+
+    /* ── Runs Table ─────────────────────────────── */
+    .runs-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #12121a;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid #1e1e2e;
+    }
+    .runs-table th {
+      text-align: left;
+      padding: 0.8rem 1rem;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      color: #666;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid #1e1e2e;
+      background: #0d0d14;
+    }
+    .runs-table td {
+      padding: 0.7rem 1rem;
+      font-size: 0.85rem;
+      border-bottom: 1px solid #1e1e2e;
+    }
+    .runs-table tr:last-child td { border-bottom: none; }
+    .runs-table tr:hover td { background: rgba(124,58,237,0.05); }
+    .runs-table tr { cursor: pointer; }
+
+    .badge {
+      font-size: 0.65rem;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .badge-completed { background: rgba(34,197,94,0.2); color: #22c55e; }
+    .badge-failed { background: rgba(239,68,68,0.2); color: #ef4444; }
+    .badge-running { background: rgba(124,58,237,0.2); color: #7c3aed; }
+    .badge-pending { background: rgba(102,102,102,0.2); color: #666; }
+
+    .agent-chips { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+    .agent-chip {
+      font-size: 0.7rem;
+      padding: 1px 6px;
+      background: #1a1a2e;
+      border: 1px solid #2a2a3e;
+      border-radius: 4px;
+      color: #aaa;
+    }
+
+    .duration { color: #888; font-family: 'SF Mono', monospace; font-size: 0.8rem; }
+    .empty-state { text-align: center; padding: 3rem; color: #444; font-style: italic; }
+
+    /* ── Run Detail View ────────────────────────── */
+    .detail-back {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      color: #7c3aed;
+      cursor: pointer;
+      font-size: 0.85rem;
+      margin-bottom: 1rem;
+      padding: 0.4rem 0;
+    }
+    .detail-back:hover { text-decoration: underline; }
+
+    .detail-header {
+      background: #12121a;
+      border: 1px solid #1e1e2e;
+      border-radius: 12px;
+      padding: 1.2rem 1.5rem;
+      margin-bottom: 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .detail-header h2 { font-size: 1.1rem; }
+    .detail-header .meta { display: flex; gap: 1.5rem; font-size: 0.85rem; color: #888; }
+
+    /* ── Timeline ──────────────────────────────── */
+    .timeline { position: relative; margin-left: 1rem; }
+    .timeline::before {
+      content: '';
+      position: absolute;
+      left: 12px;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: #1e1e2e;
+    }
+    .timeline-step {
+      position: relative;
+      padding: 0 0 1.5rem 2.5rem;
+    }
+    .timeline-step:last-child { padding-bottom: 0; }
+    .timeline-dot {
+      position: absolute;
+      left: 5px;
+      top: 4px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 2px solid #2a2a3e;
+      background: #0a0a0f;
+    }
+    .timeline-dot.completed { border-color: #22c55e; background: rgba(34,197,94,0.2); }
+    .timeline-dot.failed { border-color: #ef4444; background: rgba(239,68,68,0.2); }
+    .timeline-dot.running { border-color: #7c3aed; background: rgba(124,58,237,0.2); }
+    .timeline-dot.waiting_user { border-color: #fbbf24; background: rgba(251,191,36,0.2); }
+
+    .timeline-card {
+      background: #12121a;
+      border: 1px solid #1e1e2e;
+      border-radius: 10px;
+      padding: 1rem 1.2rem;
+    }
+    .timeline-card.completed { border-color: rgba(34,197,94,0.3); }
+    .timeline-card.failed { border-color: rgba(239,68,68,0.3); }
+    .timeline-card.running { border-color: rgba(124,58,237,0.3); }
+
+    .timeline-card .step-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+    .timeline-card .step-head .left { display: flex; align-items: center; gap: 0.5rem; }
+    .timeline-card .step-meta { font-size: 0.75rem; color: #666; margin-bottom: 0.3rem; }
+    .timeline-card .step-duration { font-family: 'SF Mono', monospace; font-size: 0.8rem; color: #888; }
+
+    .timeline-card .step-output-preview {
+      font-size: 0.8rem;
+      color: #888;
+      margin-top: 0.5rem;
+      padding: 0.5rem;
+      background: #0a0a0f;
+      border-radius: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 80px;
+      overflow: hidden;
+      user-select: text;
+    }
+
+    .timeline-card .retry-info {
+      margin-top: 0.5rem;
+      padding: 0.4rem 0.6rem;
+      background: rgba(251,191,36,0.08);
+      border: 1px solid rgba(251,191,36,0.2);
+      border-radius: 6px;
+      font-size: 0.75rem;
+      color: #fbbf24;
+    }
+
+    .timeline-card .validation-errors {
+      margin-top: 0.5rem;
+      padding: 0.4rem 0.6rem;
+      background: rgba(239,68,68,0.08);
+      border: 1px solid rgba(239,68,68,0.2);
+      border-radius: 6px;
+      font-size: 0.75rem;
+      color: #ef4444;
+    }
+
+    .btn-inspect {
+      background: #1e1e2e;
+      color: #7c3aed;
+      border: 1px solid #2a2a3e;
+      border-radius: 6px;
+      padding: 4px 12px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      margin-top: 0.5rem;
+    }
+    .btn-inspect:hover { background: #2a2a3e; }
+
+    /* ── YAML Inspector Modal ─────────────────── */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      animation: fadeIn 0.2s ease;
+    }
+    .modal {
+      background: #12121a;
+      border: 1px solid #2a2a3e;
+      border-radius: 16px;
+      width: 90%;
+      max-width: 700px;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      animation: slideIn 0.3s ease;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.2rem 1.5rem;
+      border-bottom: 1px solid #1e1e2e;
+    }
+    .modal-header h3 { font-size: 1rem; }
+    .modal-close {
+      background: none;
+      border: none;
+      color: #666;
+      font-size: 1.2rem;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 6px;
+    }
+    .modal-close:hover { background: #1e1e2e; color: #e0e0e0; }
+    .modal-body {
+      padding: 1.5rem;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .yaml-block {
+      background: #0a0a0f;
+      border: 1px solid #1e1e2e;
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.8rem;
+      line-height: 1.6;
+      color: #a0a0b0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      user-select: text;
+    }
+    .yaml-block .yaml-key { color: #7c3aed; }
+    .yaml-block .yaml-string { color: #22c55e; }
+    .yaml-block .yaml-number { color: #fbbf24; }
+    .yaml-block .yaml-bool { color: #ec4899; }
+    .modal-footer {
+      padding: 0.8rem 1.5rem;
+      border-top: 1px solid #1e1e2e;
+      display: flex;
+      justify-content: flex-end;
+    }
+    .btn-copy {
+      background: #1e1e2e;
+      color: #888;
+      border: none;
+      border-radius: 6px;
+      padding: 0.5rem 1rem;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .btn-copy:hover { background: #2a2a3e; color: #e0e0e0; }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid #7c3aed;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 768px) {
+      .stats-grid { grid-template-columns: 1fr; }
+      .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <h1>📊 Pipeline Monitor</h1>
+  <p class="subtitle"><a href="./">← Back to Builder</a></p>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="overview" onclick="switchTab('overview')">Overview</div>
+    <div class="tab" data-tab="runs" onclick="switchTab('runs')">Runs</div>
+    <div class="tab" data-tab="detail" onclick="switchTab('detail')" id="tab-detail" style="display:none;">Run Detail</div>
+  </div>
+
+  <!-- Overview Tab -->
+  <div class="tab-content active" id="content-overview">
+    <div class="metrics-grid" id="metrics-cards"></div>
+    <div class="stats-grid" id="stats-panels"></div>
+  </div>
+
+  <!-- Runs Tab -->
+  <div class="tab-content" id="content-runs">
+    <div id="runs-list"></div>
+  </div>
+
+  <!-- Detail Tab -->
+  <div class="tab-content" id="content-detail">
+    <div id="run-detail"></div>
+  </div>
+
+  <script>
+    const basePath = window.location.pathname.replace(/\/monitoring\.html$/, '').replace(/\/$/, '');
+
+    // ── Tab switching ────────────────────────────
+    function switchTab(name) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+      document.getElementById(`content-${name}`).classList.add('active');
+    }
+
+    // ── Format duration ──────────────────────────
+    function formatDuration(ms) {
+      if (ms == null) return '—';
+      if (ms < 1000) return `${ms}ms`;
+      const s = Math.round(ms / 1000);
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60);
+      const rs = s % 60;
+      return `${m}m ${rs}s`;
+    }
+
+    function formatDate(dateStr) {
+      if (!dateStr) return '—';
+      const d = new Date(dateStr + (dateStr.includes('Z') ? '' : 'Z'));
+      return d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    }
+
+    // ── YAML highlighting ────────────────────────
+    function highlightYaml(text) {
+      const escaped = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return escaped
+        .replace(/^(\s*)([\w_.-]+)(\s*:)/gm, '$1<span class="yaml-key">$2</span>$3')
+        .replace(/:\s*"([^"]*)"$/gm, ': "<span class="yaml-string">$1</span>"')
+        .replace(/:\s*'([^']*)'$/gm, ": '<span class=\"yaml-string\">$1</span>'")
+        .replace(/:\s*(\d+\.?\d*)$/gm, ': <span class="yaml-number">$1</span>')
+        .replace(/:\s*(true|false)$/gm, ': <span class="yaml-bool">$1</span>');
+    }
+
+    // ── Load metrics ─────────────────────────────
+    async function loadMetrics() {
+      const res = await fetch(basePath + '/api/metrics');
+      const m = await res.json();
+
+      document.getElementById('metrics-cards').innerHTML = `
+        <div class="metric-card">
+          <div class="value purple">${m.total_runs}</div>
+          <div class="label">Total Runs</div>
+        </div>
+        <div class="metric-card">
+          <div class="value green">${m.success_rate}%</div>
+          <div class="label">Success Rate</div>
+        </div>
+        <div class="metric-card">
+          <div class="value">${formatDuration(m.avg_duration_ms)}</div>
+          <div class="label">Avg Duration</div>
+        </div>
+        <div class="metric-card">
+          <div class="value green">${m.completed}</div>
+          <div class="label">Completed</div>
+        </div>
+        <div class="metric-card">
+          <div class="value red">${m.failed}</div>
+          <div class="label">Failed</div>
+        </div>
+        <div class="metric-card">
+          <div class="value yellow">${m.running}</div>
+          <div class="label">Running</div>
+        </div>
+      `;
+
+      const maxFails = m.failure_points.length > 0 ? m.failure_points[0].fail_count : 1;
+      const failuresHtml = m.failure_points.length > 0
+        ? m.failure_points.map(f => `
+          <div class="stats-row">
+            <span>${f.agent_name}</span>
+            <div class="stats-bar"><div class="stats-bar-fill" style="width:${(f.fail_count/maxFails)*100}%;background:#ef4444;"></div></div>
+            <span style="color:#ef4444;">${f.fail_count}</span>
+          </div>
+        `).join('')
+        : '<div class="stats-row" style="color:#444;">No failures recorded</div>';
+
+      const maxRetries = m.retry_stats.length > 0 ? m.retry_stats[0].total_retries : 1;
+      const retriesHtml = m.retry_stats.length > 0
+        ? m.retry_stats.map(r => `
+          <div class="stats-row">
+            <span>${r.agent_name}</span>
+            <div class="stats-bar"><div class="stats-bar-fill" style="width:${(r.total_retries/maxRetries)*100}%;background:#fbbf24;"></div></div>
+            <span style="color:#fbbf24;">${r.total_retries}</span>
+          </div>
+        `).join('')
+        : '<div class="stats-row" style="color:#444;">No retries recorded</div>';
+
+      document.getElementById('stats-panels').innerHTML = `
+        <div class="stats-panel">
+          <h3>Common Failure Points</h3>
+          ${failuresHtml}
+        </div>
+        <div class="stats-panel">
+          <h3>Retry Statistics</h3>
+          ${retriesHtml}
+        </div>
+      `;
+    }
+
+    // ── Load runs list ───────────────────────────
+    async function loadRuns() {
+      const res = await fetch(basePath + '/api/runs');
+      const runs = await res.json();
+
+      if (runs.length === 0) {
+        document.getElementById('runs-list').innerHTML = '<div class="empty-state">No pipeline runs yet. Go build one!</div>';
+        return;
+      }
+
+      const rows = runs.map(r => `
+        <tr onclick="loadRunDetail('${r.id}')">
+          <td><span class="badge badge-${r.status}">${r.status}</span></td>
+          <td>${r.pipeline_name || 'Unnamed'}</td>
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(r.input || '').substring(0, 60)}</td>
+          <td>
+            <div class="agent-chips">
+              ${r.agents.map(a => `<span class="agent-chip">${a}</span>`).join('')}
+            </div>
+          </td>
+          <td><span class="duration">${formatDuration(r.duration_ms)}</span></td>
+          <td>${formatDate(r.created_at)}</td>
+        </tr>
+      `).join('');
+
+      document.getElementById('runs-list').innerHTML = `
+        <table class="runs-table">
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Pipeline</th>
+              <th>Input</th>
+              <th>Agents</th>
+              <th>Duration</th>
+              <th>Date</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    // ── Load run detail ──────────────────────────
+    async function loadRunDetail(runId) {
+      // Show detail tab
+      document.getElementById('tab-detail').style.display = '';
+      switchTab('detail');
+
+      const res = await fetch(`${basePath}/api/runs/${runId}`);
+      const run = await res.json();
+
+      const backlogRes = await fetch(`${basePath}/api/runs/${runId}/backlog`);
+      const backlog = await backlogRes.json();
+
+      const totalDuration = run.steps.length > 0
+        ? (() => {
+            const starts = run.steps.filter(s => s.started_at).map(s => new Date(s.started_at + 'Z').getTime());
+            const ends = run.steps.filter(s => s.ended_at).map(s => new Date(s.ended_at + 'Z').getTime());
+            if (starts.length && ends.length) return Math.max(...ends) - Math.min(...starts);
+            return null;
+          })()
+        : null;
+
+      const stepsHtml = run.steps.map((s, i) => {
+        const stepDuration = s.started_at && s.ended_at
+          ? new Date(s.ended_at + 'Z').getTime() - new Date(s.started_at + 'Z').getTime()
+          : null;
+
+        const outputPreview = s.output
+          ? `<div class="step-output-preview">${(s.output.substring(0, 150)).replace(/</g,'&lt;').replace(/>/g,'&gt;')}${s.output.length > 150 ? '...' : ''}</div>
+             <button class="btn-inspect" onclick="openInspector(${i})">🔍 Inspect Output</button>`
+          : '';
+
+        const retryHtml = s.attempt > 1
+          ? `<div class="retry-info">⚠ ${s.attempt} attempts needed</div>`
+          : '';
+
+        const valErrors = s.validation_errors;
+        const valHtml = valErrors && valErrors.length > 0
+          ? `<div class="validation-errors">
+              ${valErrors.map(e => `<div>Attempt ${e.attempt}: ${e.errors.map(err => `${err.path}: expected ${err.expected}, got ${err.received}`).join('; ')}</div>`).join('')}
+            </div>`
+          : '';
+
+        return `
+          <div class="timeline-step">
+            <div class="timeline-dot ${s.status}"></div>
+            <div class="timeline-card ${s.status}">
+              <div class="step-head">
+                <div class="left">
+                  <strong>${s.agent_name}</strong>
+                  <span class="badge badge-${s.status}">${s.status}</span>
+                </div>
+                <span class="step-duration">${formatDuration(stepDuration)}</span>
+              </div>
+              <div class="step-meta">
+                Step ${i + 1}/${run.steps.length}
+                ${s.started_at ? ' · Started ' + formatDate(s.started_at) : ''}
+              </div>
+              ${retryHtml}
+              ${valHtml}
+              ${outputPreview}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      const backlogHtml = backlog.length > 0
+        ? `<div class="stats-panel" style="margin-top:1.5rem;">
+            <h3>Backlog Tickets</h3>
+            ${backlog.map(t => `
+              <div class="stats-row">
+                <span>${t.title}</span>
+                <span class="badge badge-${t.priority === 'high' ? 'failed' : t.priority === 'low' ? 'pending' : 'running'}">${t.priority}</span>
+              </div>
+            `).join('')}
+          </div>`
+        : '';
+
+      // Store outputs for inspector
+      window._detailStepOutputs = {};
+      run.steps.forEach((s, i) => { if (s.output) window._detailStepOutputs[i] = s.output; });
+
+      document.getElementById('run-detail').innerHTML = `
+        <div class="detail-back" onclick="switchTab('runs')">← Back to runs</div>
+        <div class="detail-header">
+          <div>
+            <h2>${run.input ? run.input.substring(0, 80) : 'Pipeline Run'}</h2>
+            <div style="font-size:0.75rem;color:#666;margin-top:0.3rem;">ID: ${run.id}</div>
+          </div>
+          <div class="meta">
+            <span class="badge badge-${run.status}">${run.status}</span>
+            <span class="duration">${formatDuration(totalDuration)}</span>
+            <span>${formatDate(run.created_at)}</span>
+          </div>
+        </div>
+        <div class="timeline">
+          ${stepsHtml}
+        </div>
+        ${backlogHtml}
+      `;
+    }
+
+    // ── Inspector modal ──────────────────────────
+    function openInspector(stepIndex) {
+      const output = window._detailStepOutputs[stepIndex];
+      if (!output) return;
+
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.onclick = (e) => { if (e.target === backdrop) backdrop.remove(); };
+
+      backdrop.innerHTML = `
+        <div class="modal">
+          <div class="modal-header">
+            <h3>Output Inspector — Step ${stepIndex + 1}</h3>
+            <button class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="yaml-block">${highlightYaml(output)}</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-copy" onclick="navigator.clipboard.writeText(window._detailStepOutputs[${stepIndex}]);this.textContent='Copied!';setTimeout(()=>this.textContent='📋 Copy',1500)">📋 Copy</button>
+          </div>
+        </div>`;
+      document.body.appendChild(backdrop);
+
+      const onKey = (e) => { if (e.key === 'Escape') { backdrop.remove(); document.removeEventListener('keydown', onKey); } };
+      document.addEventListener('keydown', onKey);
+    }
+
+    // ── Init ─────────────────────────────────────
+    loadMetrics();
+    loadRuns();
+
+    // Auto-refresh every 30s
+    setInterval(() => {
+      loadMetrics();
+      loadRuns();
+    }, 30000);
+  </script>
+</body>
+</html>
