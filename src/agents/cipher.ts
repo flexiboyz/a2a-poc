@@ -181,7 +181,7 @@ export function createCipherRouter(baseUrl: string): Router {
         tags: ["planning", "architecture"],
       },
     ],
-    capabilities: { pushNotifications: false },
+    capabilities: { pushNotifications: false, streaming: true },
     defaultInputModes: ["text"],
     defaultOutputModes: ["text"],
   };
