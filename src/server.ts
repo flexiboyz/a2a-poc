@@ -18,8 +18,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { createAgentRouter } from "./agents/create-agent";
 import type { AgentDef } from "./agents/create-agent";
-import { createCipherRouter } from "./agents/cipher";
-import { createWorkflowMasterRouter } from "./agents/workflowmaster";
+import { createCipherRouter, getLastCipherUsage } from "./agents/cipher";
+import { createWorkflowMasterRouter, getLastWorkflowMasterUsage } from "./agents/workflowmaster";
+import { emptyUsage, type TokenUsage } from "./gateway";
 import { A2AClient } from "@a2a-js/sdk/client";
 import type { Message, Task } from "@a2a-js/sdk";
 import { sendMessageStream } from "./a2a/client";
@@ -227,10 +228,41 @@ app.get("/api/agents", (_req, res) => {
   }));
 });
 
+// ── API: Pipeline Templates ───────────────────────────────────────────────
+
+app.get("/api/templates", (_req, res) => {
+  try {
+    res.json(listTemplates());
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+
 // ── API: Pipeline CRUD ─────────────────────────────────────────────────────
 
 app.post("/api/pipelines", (req, res) => {
-  const { name, agents } = req.body;
+  const { name, agents, template_name } = req.body;
+
+  if (template_name) {
+    const template = resolveTemplate(template_name);
+    if (!template) {
+      return res.status(400).json({ error: `Unknown template: ${template_name}` });
+    }
+    const id = uuidv4();
+    const pipelineName = name || `${template_name} Pipeline`;
+    const pipelineAgents = template.agents;
+    db.prepare("INSERT INTO pipelines (id, name, agents, template_name) VALUES (?, ?, ?, ?)")
+      .run(id, pipelineName, JSON.stringify(pipelineAgents), template_name);
+    return res.json({
+      id,
+      name: pipelineName,
+      agents: pipelineAgents,
+      template_name,
+      default_prompt: template.default_prompt,
+    });
+  }
+
   const id = uuidv4();
   db.prepare("INSERT INTO pipelines (id, name, agents) VALUES (?, ?, ?)").run(id, name || "Untitled", JSON.stringify(agents));
   res.json({ id, name, agents });
@@ -278,7 +310,7 @@ app.get("/api/runs/:id", (req, res) => {
     ...run,
     replay_of: run.replay_of ?? null,
     replay_from_step: run.replay_from_step ?? null,
-    steps: steps.map(s => ({ ...s, validation_errors: s.validation_errors ? JSON.parse(s.validation_errors) : null })),
+    steps: steps.map(s => ({ ...s, validation_errors: s.validation_errors ? JSON.parse(s.validation_errors) : null, input_tokens: s.input_tokens, output_tokens: s.output_tokens, total_tokens: s.total_tokens, estimated_cost: s.estimated_cost, retry_token_overhead: s.retry_token_overhead })),
     pendingInput: pending ? { step: pending.stepIndex, question: pending.question, agent: pending.agentSlug, isEscalation: pending.isEscalation ?? false } : null,
   });
 });
@@ -1129,9 +1161,19 @@ async function executeSMPipeline(runId: string, pipelineId: string, input: strin
 
   console.log(`[orchestrator] SM derived pipeline: [${derivedAgentNames.join(" → ")}]`);
 
-  // Mark SM step done
-  db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = 0").run(smOutput, runId);
-  broadcast(runId, { type: "step-completed", agent: "WorkflowMaster", step: 0, emoji: "🏗️", output: smOutput });
+  // Mark SM step done + token usage
+  const smTokenUsage = getLastWorkflowMasterUsage((result as any)?.id);
+  if (smTokenUsage) {
+    db.prepare(`UPDATE run_steps SET status = 'completed', output = ?,
+      input_tokens = ?, output_tokens = ?, total_tokens = ?, estimated_cost = ?, retry_token_overhead = ?,
+      ended_at = datetime('now') WHERE run_id = ? AND step_order = 0`)
+      .run(smOutput, smTokenUsage.input_tokens, smTokenUsage.output_tokens,
+        smTokenUsage.total_tokens, smTokenUsage.estimated_cost, smTokenUsage.retry_token_overhead ?? 0, runId);
+  } else {
+    db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = 0").run(smOutput, runId);
+  }
+  broadcast(runId, { type: "step-completed", agent: "WorkflowMaster", step: 0, emoji: "🏗️", output: smOutput,
+    tokenUsage: smTokenUsage ? { input_tokens: smTokenUsage.input_tokens, output_tokens: smTokenUsage.output_tokens, total_tokens: smTokenUsage.total_tokens, estimated_cost: smTokenUsage.estimated_cost, is_estimated: smTokenUsage.is_estimated } : undefined });
 
   // ── Derive pipeline from SM output ────────────────────────────────────
   // Full pipeline = SM step + derived steps
@@ -1169,9 +1211,59 @@ async function executeSMPipeline(runId: string, pipelineId: string, input: strin
   await executePipeline(runId, fullSteps, input, 1);
 }
 
+// ── API: Cost tracking ───────────────────────────────────────────────────────
+
+app.get("/api/runs/:id/costs", (req, res) => {
+  const steps = db.prepare(`
+    SELECT agent_name, step_order, input_tokens, output_tokens, total_tokens,
+           estimated_cost, retry_token_overhead, attempt, status
+    FROM run_steps WHERE run_id = ? ORDER BY step_order
+  `).all(req.params.id) as any[];
+  const totalCost = steps.reduce((sum: number, s: any) => sum + (s.estimated_cost ?? 0), 0);
+  const totalTokens = steps.reduce((sum: number, s: any) => sum + (s.total_tokens ?? 0), 0);
+  res.json({ run_id: req.params.id, total_cost: totalCost, total_tokens: totalTokens, steps });
+});
+
+app.get("/api/costs/summary", (_req, res) => {
+  const byAgent = db.prepare(`
+    SELECT agent_name,
+      COUNT(*) as step_count,
+      SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
+      SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
+      SUM(COALESCE(total_tokens, 0)) as total_tokens,
+      SUM(COALESCE(estimated_cost, 0)) as total_cost,
+      AVG(COALESCE(estimated_cost, 0)) as avg_cost_per_step
+    FROM run_steps
+    WHERE status = 'completed' AND total_tokens IS NOT NULL
+    GROUP BY agent_name ORDER BY total_cost DESC
+  `).all();
+
+  const byPipeline = db.prepare(`
+    SELECT r.pipeline_id, p.name as pipeline_name,
+      COUNT(DISTINCT r.id) as run_count,
+      SUM(COALESCE(rs.total_tokens, 0)) as total_tokens,
+      SUM(COALESCE(rs.estimated_cost, 0)) as total_cost
+    FROM run_steps rs
+    JOIN runs r ON rs.run_id = r.id
+    JOIN pipelines p ON r.pipeline_id = p.id
+    WHERE rs.status = 'completed' AND rs.total_tokens IS NOT NULL
+    GROUP BY r.pipeline_id ORDER BY total_cost DESC
+  `).all();
+
+  const totals = db.prepare(`
+    SELECT
+      SUM(COALESCE(total_tokens, 0)) as total_tokens,
+      SUM(COALESCE(estimated_cost, 0)) as total_cost,
+      COUNT(*) as tracked_steps
+    FROM run_steps WHERE total_tokens IS NOT NULL
+  `).get() as any;
+
+  res.json({ totals, by_agent: byAgent, by_pipeline: byPipeline });
+});
+
 // ── Start ──────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`\n[🚀] A2A Pipeline Builder: http://localhost:${PORT}`);
   console.log(`[🚀] Caddy: http://rockeros.rockerone.io/a2a-poc/`);
   console.log(`\n[📋] Agent Cards:`);
@@ -1180,4 +1272,18 @@ app.listen(PORT, () => {
     console.log(`     ${a.emoji} ${a.name}: ${BASE_URL}/${slug}/.well-known/agent-card.json${a.requiresInput ? " ⏸️ (input-required)" : ""}`);
   }
   console.log();
+
+  startConfigWatcher();
 });
+
+// ── Graceful shutdown ──────────────────────────────────────────────────────
+
+function shutdown() {
+  console.log("[shutdown] Shutting down...");
+  stopConfigWatcher().then(() => {
+    server.close(() => process.exit(0));
+  });
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);

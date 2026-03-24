@@ -1,5 +1,10 @@
 # Callback definitions for A2A pipeline orchestrator
 # Replaces hardcoded if/else chains in executePipeline()
+#
+# Callback precedence (§11.5):
+#   1. Agent overrides (this file, overrides section) — highest priority
+#   2. Template overrides (workflow/templates.yaml, per-template callback_overrides)
+#   3. Defaults (this file, defaults section) — lowest priority
 
 defaults:
   on_done: next_agent

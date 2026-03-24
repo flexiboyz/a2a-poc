@@ -96,6 +96,9 @@ if (!colNames.includes("attempt")) {
 if (!colNames.includes("validation_errors")) {
   db.exec("ALTER TABLE run_steps ADD COLUMN validation_errors TEXT");
 }
+if (!colNames.includes("summary_output")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN summary_output TEXT");
+}
 
 // Add replay columns to runs table if missing
 const runColumns = db.prepare("PRAGMA table_info(runs)").all() as { name: string }[];
