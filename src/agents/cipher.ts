@@ -24,11 +24,11 @@ import {
 } from "@a2a-js/sdk/server/express";
 
 import { selfValidateOutput } from "./self-validate.js";
+import { invokeGateway as invokeGatewayShared, accumulateUsage, emptyUsage, type TokenUsage } from "../gateway.js";
 
 // ── Config ────────────────────────────────────────────────────────────────
 
-const GATEWAY_URL = process.env["OPENCLAW_GATEWAY_URL"] ?? "http://127.0.0.1:18789";
-const GATEWAY_TOKEN = process.env["OPENCLAW_GATEWAY_TOKEN"] ?? "";
+
 
 // Cipher's system brief — combines SHARED_RULES + role-specific instructions
 const CIPHER_BRIEF = `# You are Cipher 🔐
@@ -55,50 +55,19 @@ Data & Systems Analyst — investigates structure, dependencies, and data flows.
 3. Be structured and precise — your output feeds the next agent
 `;
 
-// ── Gateway invocation ────────────────────────────────────────────────────
+// ── Token usage tracking ────────────────────────────────────────────────
 
-async function invokeGateway(task: string): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120_000); // 2 min timeout
-
-  try {
-    const res = await fetch(`${GATEWAY_URL}/tools/invoke`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${GATEWAY_TOKEN}`,
-      },
-      body: JSON.stringify({
-        tool: "sessions_spawn",
-        args: {
-          runtime: "acp",
-          agentId: "claude",
-          mode: "run",
-          task,
-          runTimeoutSeconds: 300,
-        },
-      }),
-      signal: controller.signal,
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`Gateway ${res.status}: ${text.slice(0, 500)}`);
-    }
-
-    const data = await res.json() as Record<string, any>;
-    // Extract the agent's output from the Gateway response
-    const result = data?.["result"]?.["details"] ?? data?.["result"] ?? data;
-    if (typeof result === "string") return result;
-    return JSON.stringify(result, null, 2);
-  } catch (err: unknown) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error("Gateway invocation timed out (120s)");
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeoutId);
+const usageByTask = new Map<string, TokenUsage>();
+export function getLastCipherUsage(taskId?: string): TokenUsage | null {
+  if (!taskId) {
+    const first = usageByTask.entries().next();
+    if (first.done) return null;
+    usageByTask.delete(first.value[0]);
+    return first.value[1];
   }
+  const u = usageByTask.get(taskId) ?? null;
+  usageByTask.delete(taskId);
+  return u;
 }
 
 // ── Cipher Executor ───────────────────────────────────────────────────────
@@ -117,15 +86,24 @@ class CipherExecutor implements AgentExecutor {
 
     try {
       console.log(`[🔐 Cipher] Calling ACP Claude via Gateway...`);
-      const rawOutput = await invokeGateway(fullBrief);
-      console.log(`[🔐 Cipher] → gateway done (${rawOutput.length} chars)`);
+      let cumulativeUsage = emptyUsage();
+      const gatewayResult = await invokeGatewayShared(fullBrief);
+      const rawOutput = gatewayResult.output;
+      cumulativeUsage = accumulateUsage(cumulativeUsage, gatewayResult.usage);
+      console.log(`[🔐 Cipher] → gateway done (${rawOutput.length} chars, ${gatewayResult.usage.total_tokens} tokens${gatewayResult.usage.is_estimated ? " est." : ""})`);
 
       // Self-validate output against Zod schema (§11.4)
       const { finalOutput: output, attempts, selfValidated } = await selfValidateOutput(
         "Cipher",
         rawOutput,
-        (feedback) => invokeGateway(`${CIPHER_BRIEF}\n\n${feedback}`),
+        async (feedback) => {
+          const retryResult = await invokeGatewayShared(`${CIPHER_BRIEF}\n\n${feedback}`);
+          cumulativeUsage = accumulateUsage(cumulativeUsage, retryResult.usage);
+          return retryResult.output;
+        },
       );
+      cumulativeUsage.retry_token_overhead = cumulativeUsage.total_tokens - gatewayResult.usage.total_tokens;
+      usageByTask.set(ctx.taskId, cumulativeUsage);
       if (attempts > 0) {
         console.log(`[🔐 Cipher] Self-validation: ${selfValidated ? "passed" : "failed"} after ${attempts} attempt(s)`);
       }

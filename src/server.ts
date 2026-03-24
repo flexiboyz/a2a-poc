@@ -13,13 +13,15 @@ import { v4 as uuidv4 } from "uuid";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { startConfigWatcher, stopConfigWatcher } from "./a2a/config-watcher.js";
+import { dispatchWebhookEvent } from "./webhook/dispatcher.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { createAgentRouter } from "./agents/create-agent";
 import type { AgentDef } from "./agents/create-agent";
-import { createCipherRouter } from "./agents/cipher";
-import { createWorkflowMasterRouter } from "./agents/workflowmaster";
+import { createCipherRouter, getLastCipherUsage } from "./agents/cipher";
+import { createWorkflowMasterRouter, getLastWorkflowMasterUsage } from "./agents/workflowmaster";
+import { emptyUsage, type TokenUsage } from "./gateway";
 import { A2AClient } from "@a2a-js/sdk/client";
 import type { Message, Task } from "@a2a-js/sdk";
 import { sendMessageStream } from "./a2a/client";
@@ -93,6 +95,16 @@ function broadcast(runId: string, data: any) {
   const clients = sseClients.get(runId) ?? [];
   for (const res of clients) {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
+  }
+
+  // Dispatch to webhook subscribers (fire-and-forget, non-blocking)
+  try {
+    const eventType = data?.type as string | undefined;
+    if (eventType) {
+      dispatchWebhookEvent(runId, eventType, data);
+    }
+  } catch {
+    // Webhook failures must never break the pipeline
   }
 }
 
@@ -288,7 +300,7 @@ app.get("/api/runs/:id", (req, res) => {
     ...run,
     replay_of: run.replay_of ?? null,
     replay_from_step: run.replay_from_step ?? null,
-    steps: steps.map(s => ({ ...s, validation_errors: s.validation_errors ? JSON.parse(s.validation_errors) : null })),
+    steps: steps.map(s => ({ ...s, validation_errors: s.validation_errors ? JSON.parse(s.validation_errors) : null, input_tokens: s.input_tokens, output_tokens: s.output_tokens, total_tokens: s.total_tokens, estimated_cost: s.estimated_cost, retry_token_overhead: s.retry_token_overhead })),
     pendingInput: pending ? { step: pending.stepIndex, question: pending.question, agent: pending.agentSlug, isEscalation: pending.isEscalation ?? false } : null,
   });
 });
@@ -603,6 +615,7 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
     let output: string = "";
     let validationAttempts: Array<{ attempt: number; errors: any[]; raw: string }> = [];
     let currentInput = chainedInput;
+    let a2aTaskId: string | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       db.prepare("UPDATE run_steps SET attempt = ? WHERE run_id = ? AND step_order = ?").run(attempt, runId, i);
@@ -793,7 +806,11 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
     processOutOfScope(runId, agentName, i, output);
 
     // ── on_done: mark step completed, proceed to next agent ──
-    handleDone(ctx, output, validationAttempts);
+    // Retrieve token usage from real agents (Cipher, WorkflowMaster)
+    let stepTokenUsage: TokenUsage | null = null;
+    if (agentName === "Cipher") stepTokenUsage = getLastCipherUsage(a2aTaskId);
+    else if (agentName === "WorkflowMaster") stepTokenUsage = getLastWorkflowMasterUsage(a2aTaskId);
+    handleDone(ctx, output, validationAttempts, stepTokenUsage);
   }
 
   // Pipeline done
@@ -910,9 +927,19 @@ async function executeSMPipeline(runId: string, pipelineId: string, input: strin
 
   console.log(`[orchestrator] SM derived pipeline: [${derivedAgents.join(" → ")}]`);
 
-  // Mark SM step done
-  db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = 0").run(smOutput, runId);
-  broadcast(runId, { type: "step-completed", agent: "WorkflowMaster", step: 0, emoji: "🏗️", output: smOutput });
+  // Mark SM step done + token usage
+  const smTokenUsage = getLastWorkflowMasterUsage((result as any)?.id);
+  if (smTokenUsage) {
+    db.prepare(`UPDATE run_steps SET status = 'completed', output = ?,
+      input_tokens = ?, output_tokens = ?, total_tokens = ?, estimated_cost = ?, retry_token_overhead = ?,
+      ended_at = datetime('now') WHERE run_id = ? AND step_order = 0`)
+      .run(smOutput, smTokenUsage.input_tokens, smTokenUsage.output_tokens,
+        smTokenUsage.total_tokens, smTokenUsage.estimated_cost, smTokenUsage.retry_token_overhead ?? 0, runId);
+  } else {
+    db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = 0").run(smOutput, runId);
+  }
+  broadcast(runId, { type: "step-completed", agent: "WorkflowMaster", step: 0, emoji: "🏗️", output: smOutput,
+    tokenUsage: smTokenUsage ? { input_tokens: smTokenUsage.input_tokens, output_tokens: smTokenUsage.output_tokens, total_tokens: smTokenUsage.total_tokens, estimated_cost: smTokenUsage.estimated_cost, is_estimated: smTokenUsage.is_estimated } : undefined });
 
   // ── Derive pipeline from SM output ────────────────────────────────────
   // Update pipeline with derived agents (SM + derived)
@@ -989,8 +1016,23 @@ async function executeSMPipeline(runId: string, pipelineId: string, input: strin
         }
       }
 
-      db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(output, runId, stepOrder);
-      broadcast(runId, { type: "step-completed", agent: agentName, step: stepOrder, emoji: agentDef?.emoji ?? "🤖", output });
+      // Store token usage if available from real agents
+      let derivedTokenUsage: TokenUsage | null = null;
+      const derivedTaskId = (agentStreamResult?.result as any)?.id;
+      if (agentName === "Cipher") derivedTokenUsage = getLastCipherUsage(derivedTaskId);
+      else if (agentName === "WorkflowMaster") derivedTokenUsage = getLastWorkflowMasterUsage(derivedTaskId);
+
+      if (derivedTokenUsage) {
+        db.prepare(`UPDATE run_steps SET status = 'completed', output = ?,
+          input_tokens = ?, output_tokens = ?, total_tokens = ?, estimated_cost = ?, retry_token_overhead = ?,
+          ended_at = datetime('now') WHERE run_id = ? AND step_order = ?`)
+          .run(output, derivedTokenUsage.input_tokens, derivedTokenUsage.output_tokens,
+            derivedTokenUsage.total_tokens, derivedTokenUsage.estimated_cost, derivedTokenUsage.retry_token_overhead ?? 0, runId, stepOrder);
+      } else {
+        db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(output, runId, stepOrder);
+      }
+      broadcast(runId, { type: "step-completed", agent: agentName, step: stepOrder, emoji: agentDef?.emoji ?? "🤖", output,
+        tokenUsage: derivedTokenUsage ? { input_tokens: derivedTokenUsage.input_tokens, output_tokens: derivedTokenUsage.output_tokens, total_tokens: derivedTokenUsage.total_tokens, estimated_cost: derivedTokenUsage.estimated_cost, is_estimated: derivedTokenUsage.is_estimated } : undefined });
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[orchestrator] SM pipeline agent ${agentName} failed:`, errorMsg);
@@ -1005,6 +1047,56 @@ async function executeSMPipeline(runId: string, pipelineId: string, input: strin
   db.prepare("UPDATE runs SET status = 'completed' WHERE id = ?").run(runId);
   broadcast(runId, { type: "pipeline-completed" });
 }
+
+// ── API: Cost tracking ───────────────────────────────────────────────────────
+
+app.get("/api/runs/:id/costs", (req, res) => {
+  const steps = db.prepare(`
+    SELECT agent_name, step_order, input_tokens, output_tokens, total_tokens,
+           estimated_cost, retry_token_overhead, attempt, status
+    FROM run_steps WHERE run_id = ? ORDER BY step_order
+  `).all(req.params.id) as any[];
+  const totalCost = steps.reduce((sum: number, s: any) => sum + (s.estimated_cost ?? 0), 0);
+  const totalTokens = steps.reduce((sum: number, s: any) => sum + (s.total_tokens ?? 0), 0);
+  res.json({ run_id: req.params.id, total_cost: totalCost, total_tokens: totalTokens, steps });
+});
+
+app.get("/api/costs/summary", (_req, res) => {
+  const byAgent = db.prepare(`
+    SELECT agent_name,
+      COUNT(*) as step_count,
+      SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
+      SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
+      SUM(COALESCE(total_tokens, 0)) as total_tokens,
+      SUM(COALESCE(estimated_cost, 0)) as total_cost,
+      AVG(COALESCE(estimated_cost, 0)) as avg_cost_per_step
+    FROM run_steps
+    WHERE status = 'completed' AND total_tokens IS NOT NULL
+    GROUP BY agent_name ORDER BY total_cost DESC
+  `).all();
+
+  const byPipeline = db.prepare(`
+    SELECT r.pipeline_id, p.name as pipeline_name,
+      COUNT(DISTINCT r.id) as run_count,
+      SUM(COALESCE(rs.total_tokens, 0)) as total_tokens,
+      SUM(COALESCE(rs.estimated_cost, 0)) as total_cost
+    FROM run_steps rs
+    JOIN runs r ON rs.run_id = r.id
+    JOIN pipelines p ON r.pipeline_id = p.id
+    WHERE rs.status = 'completed' AND rs.total_tokens IS NOT NULL
+    GROUP BY r.pipeline_id ORDER BY total_cost DESC
+  `).all();
+
+  const totals = db.prepare(`
+    SELECT
+      SUM(COALESCE(total_tokens, 0)) as total_tokens,
+      SUM(COALESCE(estimated_cost, 0)) as total_cost,
+      COUNT(*) as tracked_steps
+    FROM run_steps WHERE total_tokens IS NOT NULL
+  `).get() as any;
+
+  res.json({ totals, by_agent: byAgent, by_pipeline: byPipeline });
+});
 
 // ── Start ──────────────────────────────────────────────────────────────────
 

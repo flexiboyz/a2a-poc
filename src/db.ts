@@ -59,6 +59,30 @@ db.exec(`
     priority TEXT DEFAULT 'medium',
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS webhook_configs (
+    id TEXT PRIMARY KEY,
+    pipeline_id TEXT REFERENCES pipelines(id),
+    channel_type TEXT NOT NULL DEFAULT 'generic',
+    webhook_url TEXT NOT NULL,
+    event_filters TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id TEXT PRIMARY KEY,
+    webhook_config_id TEXT NOT NULL REFERENCES webhook_configs(id),
+    run_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    http_status INTEGER,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    delivered_at TEXT
+  );
 `);
 
 // ── Migrations ──────────────────────────────────────────────────────────────
@@ -91,6 +115,23 @@ const pipelineColumns = db.prepare("PRAGMA table_info(pipelines)").all() as { na
 const pipelineColNames = pipelineColumns.map(c => c.name);
 if (!pipelineColNames.includes("template_name")) {
   db.exec("ALTER TABLE pipelines ADD COLUMN template_name TEXT");
+}
+
+// ── Token/cost tracking columns ─────────────────────────────────────────────
+if (!colNames.includes("input_tokens")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN input_tokens INTEGER");
+}
+if (!colNames.includes("output_tokens")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN output_tokens INTEGER");
+}
+if (!colNames.includes("total_tokens")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN total_tokens INTEGER");
+}
+if (!colNames.includes("estimated_cost")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN estimated_cost REAL");
+}
+if (!colNames.includes("retry_token_overhead")) {
+  db.exec("ALTER TABLE run_steps ADD COLUMN retry_token_overhead INTEGER DEFAULT 0");
 }
 
 export default db;
