@@ -70,11 +70,59 @@ export type CallbackResult =
 
 let _config: CallbacksConfig | null = null;
 
+const VALID_CALLBACK_EVENTS: CallbackEvent[] = [
+  "on_done", "on_fail", "on_await_user", "on_change_request",
+  "on_pipeline_suggestion", "on_validation_fail", "on_validation_fail_final",
+];
+
+const VALID_ACTIONS = [
+  "next_agent", "notify_user", "retry_agent", "call_agent",
+  "pause_and_notify_user", "escalate_to_user", "noop",
+];
+
+function validateCallbacksConfig(config: unknown): CallbacksConfig {
+  if (!config || typeof config !== "object") {
+    throw new Error("callbacks.yaml must be a YAML object");
+  }
+  const c = config as Record<string, unknown>;
+  if (!c.defaults || typeof c.defaults !== "object") {
+    throw new Error("callbacks.yaml must have a 'defaults' object");
+  }
+
+  // Validate defaults keys are valid events
+  for (const key of Object.keys(c.defaults as object)) {
+    if (!VALID_CALLBACK_EVENTS.includes(key as CallbackEvent)) {
+      throw new Error(`Unknown callback event in defaults: ${key}`);
+    }
+    const val = (c.defaults as Record<string, unknown>)[key];
+    const action = typeof val === "string" ? val : (val as any)?.action;
+    if (!VALID_ACTIONS.includes(action)) {
+      throw new Error(`Unknown callback action for ${key}: ${action}`);
+    }
+  }
+
+  // Validate overrides structure
+  if (c.overrides && typeof c.overrides === "object") {
+    for (const [agent, events] of Object.entries(c.overrides as Record<string, unknown>)) {
+      if (events && typeof events === "object") {
+        for (const key of Object.keys(events as object)) {
+          if (!VALID_CALLBACK_EVENTS.includes(key as CallbackEvent)) {
+            throw new Error(`Unknown callback event in overrides.${agent}: ${key}`);
+          }
+        }
+      }
+    }
+  }
+
+  return config as CallbacksConfig;
+}
+
 export function loadCallbacks(): CallbacksConfig {
   if (_config) return _config;
   const yamlPath = resolve(__dirname, "../../workflow/callbacks.yaml");
   const raw = readFileSync(yamlPath, "utf-8");
-  _config = YAML.load(raw) as CallbacksConfig;
+  const parsed = YAML.load(raw);
+  _config = validateCallbacksConfig(parsed);
   return _config;
 }
 
@@ -180,19 +228,23 @@ export async function handleAgentFail(
     raw: errorMsg,
   });
 
-  if (cb.action === "retry_agent" || attempt < maxAttempts) {
-    // Retry: build feedback
-    const failure: ValidationFailure = {
-      success: false,
-      errors: [{ path: "", expected: "successful execution", received: "agent failure" }],
-      raw: errorMsg,
-    };
-    const retryFeedback = formatRetryFeedback(failure, attempt, maxAttempts);
-    const retryInput = chainedInput + "\n\n---\n\n" + YAML.dump(retryFeedback);
-    return { outcome: "retry", input: retryInput };
+  if (cb.action === "retry_agent") {
+    const retryMax = cb.max ?? maxAttempts;
+    if (attempt < retryMax) {
+      const failure: ValidationFailure = {
+        success: false,
+        errors: [{ path: "", expected: "successful execution", received: "agent failure" }],
+        raw: errorMsg,
+      };
+      const retryFeedback = formatRetryFeedback(failure, attempt, retryMax);
+      const retryInput = chainedInput + "\n\n---\n\n" + YAML.dump(retryFeedback);
+      return { outcome: "retry", input: retryInput };
+    }
+    // Exhausted retries → escalate
+    return escalateToUser(ctx, validationAttempts, retryMax);
   }
 
-  // Final fail → escalate
+  // on_fail: notify_user (default) or escalate_to_user → escalate immediately
   return escalateToUser(ctx, validationAttempts, maxAttempts);
 }
 
@@ -256,12 +308,13 @@ export async function handleAwaitUser(
   return { outcome: "wait_input", userReply, taskId };
 }
 
-/** on_done: next_agent — mark step completed, continue pipeline */
+/** on_done: mark step completed, dispatch based on resolved callback */
 export function handleDone(
   ctx: CallbackContext,
   output: string,
   validationAttempts: Array<{ attempt: number; errors: any[]; raw: string }>,
 ): CallbackResult {
+  const cb = resolveCallback(ctx.agentName, "on_done");
   const errorsJson = validationAttempts.length > 0 ? JSON.stringify(validationAttempts) : null;
   db.prepare("UPDATE run_steps SET status = 'completed', output = ?, validation_errors = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
     .run(output, errorsJson, ctx.runId, ctx.stepIndex);
@@ -272,6 +325,19 @@ export function handleDone(
     emoji: ctx.agentEmoji,
     output,
   });
+
+  // Default "next_agent" → continue. Other actions can be added via overrides.
+  if (cb.action === "notify_user") {
+    // Override: notify instead of auto-continuing (still continues pipeline)
+    ctx.broadcast(ctx.runId, {
+      type: "step-notify",
+      agent: ctx.agentName,
+      step: ctx.stepIndex,
+      emoji: ctx.agentEmoji,
+      message: `${ctx.agentEmoji} ${ctx.agentName} completed.`,
+    });
+  }
+
   return { outcome: "continue" };
 }
 
@@ -303,6 +369,109 @@ export function abortPipeline(
 
   db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(ctx.runId);
   ctx.broadcast(ctx.runId, { type: "pipeline-failed", error: reason });
+}
+
+// ── Output marker detection ─────────────────────────────────────────────────
+
+const CHANGE_REQUEST_MARKER = "CHANGE_REQUEST:";
+const PIPELINE_SUGGESTION_MARKER = "PIPELINE_SUGGESTION:";
+
+/** Check if agent output contains a change request marker */
+export function detectChangeRequest(output: string): string | null {
+  const idx = output.indexOf(CHANGE_REQUEST_MARKER);
+  if (idx === -1) return null;
+  return output.slice(idx + CHANGE_REQUEST_MARKER.length).trim();
+}
+
+/** Check if agent output contains a pipeline suggestion marker */
+export function detectPipelineSuggestion(output: string): string | null {
+  const idx = output.indexOf(PIPELINE_SUGGESTION_MARKER);
+  if (idx === -1) return null;
+  return output.slice(idx + PIPELINE_SUGGESTION_MARKER.length).trim();
+}
+
+/** on_change_request: call_agent — agent requested changes, dispatch to target agent */
+export async function handleChangeRequest(
+  ctx: CallbackContext,
+  changeContext: string,
+): Promise<CallbackResult> {
+  const cb = resolveCallback(ctx.agentName, "on_change_request");
+
+  if (cb.action === "call_agent") {
+    const targetAgent = cb.agent ?? "Assembler";
+    db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
+      .run(`Change request → ${targetAgent}: ${changeContext.slice(0, 200)}`, ctx.runId, ctx.stepIndex);
+    ctx.broadcast(ctx.runId, {
+      type: "step-change-request",
+      agent: ctx.agentName,
+      targetAgent,
+      step: ctx.stepIndex,
+      emoji: ctx.agentEmoji,
+      context: changeContext,
+    });
+    return { outcome: "continue" };
+  }
+
+  if (cb.action === "notify_user" || cb.action === "pause_and_notify_user") {
+    return escalateToUser(ctx, [], 0);
+  }
+
+  return { outcome: "noop" };
+}
+
+/** on_pipeline_suggestion: pause_and_notify_user — agent suggests pipeline changes */
+export async function handlePipelineSuggestion(
+  ctx: CallbackContext,
+  suggestion: string,
+): Promise<CallbackResult> {
+  const cb = resolveCallback(ctx.agentName, "on_pipeline_suggestion");
+
+  if (cb.action === "pause_and_notify_user") {
+    db.prepare("UPDATE run_steps SET status = 'waiting_user' WHERE run_id = ? AND step_order = ?")
+      .run(ctx.runId, ctx.stepIndex);
+    db.prepare("UPDATE runs SET status = 'waiting_user' WHERE id = ?").run(ctx.runId);
+
+    const question = `${ctx.agentEmoji} ${ctx.agentName} suggests pipeline changes:\n${suggestion}\n\nApprove or dismiss?`;
+    ctx.broadcast(ctx.runId, {
+      type: "step-pipeline-suggestion",
+      agent: ctx.agentName,
+      step: ctx.stepIndex,
+      emoji: ctx.agentEmoji,
+      suggestion,
+      question,
+    });
+
+    const reply = await new Promise<string>((resolve) => {
+      ctx.pendingInputs.set(ctx.runId, {
+        resolve,
+        stepIndex: ctx.stepIndex,
+        taskId: "",
+        agentSlug: ctx.agentSlug,
+        question,
+      });
+    });
+
+    // Resume after user decision
+    db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
+      .run(`Pipeline suggestion ${reply.toLowerCase().startsWith("approve") ? "approved" : "dismissed"}: ${suggestion.slice(0, 200)}`, ctx.runId, ctx.stepIndex);
+    db.prepare("UPDATE runs SET status = 'running' WHERE id = ?").run(ctx.runId);
+
+    ctx.broadcast(ctx.runId, {
+      type: "step-completed",
+      agent: ctx.agentName,
+      step: ctx.stepIndex,
+      emoji: ctx.agentEmoji,
+      output: `Pipeline suggestion: ${reply}`,
+    });
+
+    return { outcome: "continue" };
+  }
+
+  if (cb.action === "notify_user") {
+    return escalateToUser(ctx, [], 0);
+  }
+
+  return { outcome: "noop" };
 }
 
 /** Resume step after escalation fix/retry */

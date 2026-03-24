@@ -26,6 +26,10 @@ import {
   handleValidationFail,
   handleAwaitUser,
   handleDone,
+  handleChangeRequest,
+  handlePipelineSuggestion,
+  detectChangeRequest,
+  detectPipelineSuggestion,
   abortPipeline,
   resumeStep,
 } from "./a2a/callback-handler";
@@ -33,7 +37,6 @@ import {
 // ── Config ─────────────────────────────────────────────────────────────────
 
 const PORT = 4000;
-const MAX_VALIDATION_ATTEMPTS = 3;
 const BASE_URL = `http://localhost:${PORT}`;
 
 // ── Agent Definitions ──────────────────────────────────────────────────────
@@ -389,6 +392,24 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
 
       // Normal completion — extract output
       output = result.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "(no output)";
+
+      // ── on_change_request: detect change request markers in output ──
+      const changeRequestContext = detectChangeRequest(output);
+      if (changeRequestContext) {
+        console.log(`[orchestrator] ${agentDef.emoji} ${agentName} raised a change request`);
+        const crResult = await handleChangeRequest(ctx, changeRequestContext);
+        if (crResult.outcome === "continue") break;
+        if (crResult.outcome === "noop") { /* fall through to validation */ }
+      }
+
+      // ── on_pipeline_suggestion: detect pipeline suggestion markers in output ──
+      const pipelineSuggestion = detectPipelineSuggestion(output);
+      if (pipelineSuggestion) {
+        console.log(`[orchestrator] ${agentDef.emoji} ${agentName} suggested pipeline changes`);
+        const psResult = await handlePipelineSuggestion(ctx, pipelineSuggestion);
+        if (psResult.outcome === "continue") break;
+        if (psResult.outcome === "noop") { /* fall through to validation */ }
+      }
 
       // ── on_validation_fail: validate output against agent schema ──
       const { agentSchemas } = await import("./schemas/index");
