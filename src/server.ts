@@ -12,6 +12,7 @@ import express from "express";
 import { v4 as uuidv4 } from "uuid";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { startConfigWatcher, stopConfigWatcher } from "./a2a/config-watcher.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -967,7 +968,7 @@ async function executeSMPipeline(runId: string, pipelineId: string, input: strin
 
 // ── Start ──────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`\n[🚀] A2A Pipeline Builder: http://localhost:${PORT}`);
   console.log(`[🚀] Caddy: http://rockeros.rockerone.io/a2a-poc/`);
   console.log(`\n[📋] Agent Cards:`);
@@ -976,4 +977,18 @@ app.listen(PORT, () => {
     console.log(`     ${a.emoji} ${a.name}: ${BASE_URL}/${slug}/.well-known/agent-card.json${a.requiresInput ? " ⏸️ (input-required)" : ""}`);
   }
   console.log();
+
+  startConfigWatcher();
 });
+
+// ── Graceful shutdown ──────────────────────────────────────────────────────
+
+function shutdown() {
+  console.log("[shutdown] Shutting down...");
+  stopConfigWatcher().then(() => {
+    server.close(() => process.exit(0));
+  });
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
