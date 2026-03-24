@@ -697,15 +697,13 @@
           if (el) {
             el.classList.remove('running');
             el.classList.add('completed');
-            el.style.cursor = 'pointer';
-            el.onclick = () => openInspector(data.step);
-            el.querySelector('.badge').className = 'badge badge-completed';
-            el.querySelector('.badge').textContent = 'completed ↗';
             // Store full output for inspector
             stepOutputs[data.step] = data.output;
-            // Show truncated preview
+            // Show truncated preview + inspect button
             const preview = data.output.length > 200 ? data.output.slice(0, 200) + '...' : data.output;
-            el.querySelector('.step-output').textContent = preview;
+            el.querySelector('.badge').className = 'badge badge-completed';
+            el.querySelector('.badge').textContent = 'completed';
+            el.querySelector('.step-output').innerHTML = `<div style="margin-bottom:0.5rem;">${preview.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div><button onclick="openInspector(${data.step})" style="background:#1e1e2e;color:#7c3aed;border:1px solid #2a2a3e;border-radius:6px;padding:4px 12px;font-size:0.75rem;cursor:pointer;">🔍 Inspect Output</button>`;
           }
         }
 
