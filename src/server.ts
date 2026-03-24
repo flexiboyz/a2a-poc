@@ -41,6 +41,17 @@ import {
   abortPipeline,
   resumeStep,
 } from "./a2a/callback-handler";
+import {
+  type PipelineStep,
+  type AgentResult,
+  type NormalizedGroup,
+  normalizePipeline,
+  mergeGroupOutputs,
+  resolveGroupStatus,
+  finalizeGroup,
+  getTotalStepCount,
+  getAllAgentNames,
+} from "./a2a/parallel";
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -519,83 +530,245 @@ function extractOutput(events: any[], result: any): string {
     || "(no output)";
 }
 
-// ── Pipeline Orchestrator ──────────────────────────────────────────────────
+// ── Single Agent Executor ──────────────────────────────────────────────────
 
-async function executePipeline(runId: string, agentNames: string[], input: string, startFrom = 0) {
-  for (let i = startFrom; i < agentNames.length; i++) {
-    const agentName = agentNames[i]!;
-    const agentDef = AGENTS.find((a) => a.name === agentName);
-    if (!agentDef) throw new Error(`Unknown agent: ${agentName}`);
+/**
+ * Execute a single agent within a pipeline run.
+ * When groupId is set, failures return a failed AgentResult instead of escalating/aborting,
+ * and pipeline_suggestions are deferred (logged but not evaluated).
+ */
+async function executeAgent(
+  runId: string,
+  stepOrder: number,
+  agentName: string,
+  agentNames: string[],
+  input: string,
+  totalSteps: number,
+  groupId?: string,
+): Promise<AgentResult> {
+  const agentDef = AGENTS.find((a) => a.name === agentName);
+  if (!agentDef) throw new Error(`Unknown agent: ${agentName}`);
 
-    const slug = agentName.toLowerCase();
-    const maxAttempts = getMaxRetries(agentName);
+  const slug = agentName.toLowerCase();
+  const maxAttempts = getMaxRetries(agentName);
+  const inGroup = !!groupId;
 
-    // Build callback context for this step
-    const ctx: CallbackContext = {
-      runId,
-      stepIndex: i,
-      agentName,
-      agentEmoji: agentDef.emoji,
-      agentSlug: slug,
-      agentNames,
-      broadcast,
-      pendingInputs,
-    };
+  // Build callback context for this step
+  const ctx: CallbackContext = {
+    runId,
+    stepIndex: stepOrder,
+    agentName,
+    agentEmoji: agentDef.emoji,
+    agentSlug: slug,
+    agentNames,
+    groupId: groupId ?? null,
+    broadcast,
+    pendingInputs,
+  };
 
-    // Update step → running
-    db.prepare("UPDATE run_steps SET status = 'running', started_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(runId, i);
-    broadcast(runId, { type: "step-started", agent: agentName, step: i, emoji: agentDef.emoji });
+  // Update step → running
+  db.prepare("UPDATE run_steps SET status = 'running', started_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(runId, stepOrder);
+  broadcast(runId, { type: "step-started", agent: agentName, step: stepOrder, emoji: agentDef.emoji });
 
-    // Build accumulated context (§7)
-    const pipelineContext = buildPipelineContext(runId, i, input, agentNames.length);
-    const contextYaml = formatPipelineContextYaml(pipelineContext);
+  // Build accumulated context (§7)
+  const pipelineContext = buildPipelineContext(runId, stepOrder, input, totalSteps);
+  const contextYaml = formatPipelineContextYaml(pipelineContext);
 
-    const chainedInput = i === 0
-      ? `## Topic\n${input}\n\nYou are the first agent in the pipeline (step 1/${agentNames.length}).`
-      : `## Pipeline Context\n\`\`\`yaml\n${contextYaml}\`\`\`\n\n## Your Task\nBuild on previous agents' work. You are step ${i + 1}/${agentNames.length}.`;
+  const chainedInput = stepOrder === 0
+    ? `## Topic\n${input}\n\nYou are the first agent in the pipeline (step 1/${totalSteps}).`
+    : `## Pipeline Context\n\`\`\`yaml\n${contextYaml}\`\`\`\n\n## Your Task\nBuild on previous agents' work. You are step ${stepOrder + 1}/${totalSteps}.`;
 
-    // Discover & call agent via A2A
-    const cardUrl = `${BASE_URL}/${slug}/.well-known/agent-card.json`;
-    const client = await A2AClient.fromCardUrl(cardUrl);
+  // Discover & call agent via A2A
+  const cardUrl = `${BASE_URL}/${slug}/.well-known/agent-card.json`;
+  const client = await A2AClient.fromCardUrl(cardUrl);
 
-    // ── Retry loop (driven by callbacks) ──────────────────────────
-    let output: string = "";
-    let validationAttempts: Array<{ attempt: number; errors: any[]; raw: string }> = [];
-    let currentInput = chainedInput;
+  // ── Retry loop (driven by callbacks) ──────────────────────────
+  let output: string = "";
+  let validationAttempts: Array<{ attempt: number; errors: any[]; raw: string }> = [];
+  let currentInput = chainedInput;
+  let capturedPipelineSuggestion: string | null = null;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      db.prepare("UPDATE run_steps SET attempt = ? WHERE run_id = ? AND step_order = ?").run(attempt, runId, i);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    db.prepare("UPDATE run_steps SET attempt = ? WHERE run_id = ? AND step_order = ?").run(attempt, runId, stepOrder);
 
-      if (attempt > 1) {
-        broadcast(runId, { type: "step-retry", agent: agentName, step: i, emoji: agentDef.emoji, attempt, maxAttempts });
+    if (attempt > 1) {
+      broadcast(runId, { type: "step-retry", agent: agentName, step: stepOrder, emoji: agentDef.emoji, attempt, maxAttempts });
+    }
+
+    const streamResult = await sendMessageStream(client, {
+      message: {
+        messageId: uuidv4(),
+        role: "user",
+        parts: [{ kind: "text", text: currentInput }],
+        kind: "message",
+      },
+    });
+
+    const result = streamResult.result as any;
+
+    // ── on_fail: agent returned "failed" state ──
+    if (result.kind === "task" && result.status?.state === "failed") {
+      const errorMsg = result.status.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "Agent failed";
+      console.log(`[orchestrator] ${agentDef.emoji} ${agentName} FAILED (attempt ${attempt}/${maxAttempts})`);
+
+      if (inGroup) {
+        // In a group: return failed result instead of escalating
+        db.prepare("UPDATE run_steps SET status = 'failed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
+          .run(errorMsg, runId, stepOrder);
+        broadcast(runId, { type: "step-failed", agent: agentName, step: stepOrder, emoji: agentDef.emoji, output: errorMsg });
+        return { agentName, status: "failed", output: errorMsg };
       }
 
-      const streamResult = await sendMessageStream(client, {
-        message: {
-          messageId: uuidv4(),
-          role: "user",
-          parts: [{ kind: "text", text: currentInput }],
-          kind: "message",
-        },
-      });
+      const cbResult = await handleAgentFail(ctx, errorMsg, attempt, maxAttempts, validationAttempts, chainedInput);
 
-      const result = streamResult.result as any;
+      if (cbResult.outcome === "retry") {
+        currentInput = cbResult.input;
+        console.log(`[orchestrator] Retrying ${agentName} (attempt ${attempt + 1}/${maxAttempts})`);
+        continue;
+      }
+      if (cbResult.outcome === "abort") {
+        abortPipeline(ctx, `Aborted by user after ${maxAttempts} failed attempts`);
+        return { agentName, status: "failed", output: `Aborted after ${maxAttempts} failed attempts` };
+      }
+      if (cbResult.outcome === "fix") {
+        output = cbResult.output;
+        resumeStep(ctx);
+        break;
+      }
+      if (cbResult.outcome === "reset") {
+        resumeStep(ctx);
+        validationAttempts = [];
+        currentInput = chainedInput + (cbResult.input ? `\n\n## Additional Instructions\n${cbResult.input}` : "");
+        attempt = 0;
+        db.prepare("UPDATE run_steps SET attempt = 0 WHERE run_id = ? AND step_order = ?").run(runId, stepOrder);
+        continue;
+      }
+    }
 
-      // ── on_fail: agent returned "failed" state ──
-      if (result.kind === "task" && result.status?.state === "failed") {
-        const errorMsg = result.status.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "Agent failed";
-        console.log(`[orchestrator] ${agentDef.emoji} ${agentName} FAILED (attempt ${attempt}/${maxAttempts})`);
+    // ── on_await_user: agent needs input ──
+    if (result.kind === "task" && result.status?.state === "input-required") {
+      const question = result.status.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "Agent needs your input";
+      const taskId = result.id;
+      console.log(`[orchestrator] ${agentDef.emoji} ${agentName} requires input (task ${taskId})`);
 
-        const cbResult = await handleAgentFail(ctx, errorMsg, attempt, maxAttempts, validationAttempts, chainedInput);
+      const cbResult = await handleAwaitUser(ctx, question, taskId);
+
+      if (cbResult.outcome === "wait_input") {
+        const userReply = cbResult.userReply;
+
+        // Check if this is a branching agent — inject branch agents into pipeline
+        if (agentDef.branches) {
+          const choice = userReply.trim().toLowerCase().startsWith("b") ? "b" : "a";
+          const branch = agentDef.branches[choice];
+          console.log(`[orchestrator] Fork: user chose ${choice.toUpperCase()} \u2192 ${branch.label} [${branch.agents.join(" \u2192 ")}]`);
+
+          output = `\ud83d\udd00 Branch ${choice.toUpperCase()}: ${branch.label} \u2192 [${branch.agents.join(" \u2192 ")}]`;
+          db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(output, runId, stepOrder);
+          broadcast(runId, { type: "step-completed", agent: agentName, step: stepOrder, emoji: agentDef.emoji, output });
+
+          const branchAgents = branch.agents;
+          const remaining = agentNames.slice(stepOrder + 1);
+          agentNames.splice(stepOrder + 1, remaining.length, ...branchAgents, ...remaining);
+
+          for (let j = 0; j < branchAgents.length; j++) {
+            const bStepOrder = stepOrder + 1 + j;
+            db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')").run(uuidv4(), runId, branchAgents[j]!, bStepOrder);
+          }
+          for (let j = 0; j < remaining.length; j++) {
+            const oldOrder = stepOrder + 1 + j;
+            const newOrder = stepOrder + 1 + branchAgents.length + j;
+            db.prepare("UPDATE run_steps SET step_order = ? WHERE run_id = ? AND agent_name = ? AND step_order = ?").run(newOrder, runId, remaining[j]!, oldOrder);
+          }
+
+          broadcast(runId, {
+            type: "pipeline-branched",
+            choice: choice.toUpperCase(),
+            label: branch.label,
+            injectedAgents: branchAgents.map(name => {
+              const def = AGENTS.find(a => a.name === name);
+              return { name, emoji: def?.emoji || "\u2753" };
+            }),
+            step: stepOrder,
+          });
+
+          await new Promise(r => setTimeout(r, 200));
+          break;
+        }
+
+        // Normal input-required: resume agent with user reply via SSE stream
+        const resumeStreamResult = await sendMessageStream(client, {
+          message: {
+            messageId: uuidv4(),
+            role: "user",
+            parts: [{ kind: "text", text: userReply }],
+            kind: "message",
+            taskId: cbResult.taskId,
+          },
+        });
+
+        const resumeResult = resumeStreamResult.result as any;
+        output = resumeResult.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
+          || (resumeResult as any).status?.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
+          || "(no output)";
+        break;
+      }
+    }
+
+    // Normal completion — extract output from artifacts (§9.3) or message parts
+    output = extractOutput(streamResult.events, result);
+
+    // ── on_change_request: detect change request markers in output ──
+    const changeRequestContext = detectChangeRequest(output);
+    if (changeRequestContext) {
+      console.log(`[orchestrator] ${agentDef.emoji} ${agentName} raised a change request`);
+      const crResult = await handleChangeRequest(ctx, changeRequestContext);
+      if (crResult.outcome === "continue") break;
+      if (crResult.outcome === "noop") { /* fall through to validation */ }
+    }
+
+    // ── on_pipeline_suggestion: detect pipeline suggestion markers in output ──
+    const pipelineSuggestionText = detectPipelineSuggestion(output);
+    if (pipelineSuggestionText) {
+      if (inGroup) {
+        // In a group: defer pipeline suggestions — log but don't evaluate now
+        console.log(`[orchestrator] ${agentDef.emoji} ${agentName} suggested pipeline changes (deferred — in group)`);
+        capturedPipelineSuggestion = pipelineSuggestionText;
+      } else {
+        console.log(`[orchestrator] ${agentDef.emoji} ${agentName} suggested pipeline changes`);
+        const psResult = await handlePipelineSuggestion(ctx, pipelineSuggestionText);
+        if (psResult.outcome === "modify_pipeline") {
+          applyPipelineModification(runId, stepOrder, agentNames, psResult.suggestion);
+          break;
+        }
+        if (psResult.outcome === "continue") break;
+        if (psResult.outcome === "noop") { /* fall through to validation */ }
+      }
+    }
+
+    // ── on_validation_fail: validate output against agent schema ──
+    const { agentSchemas } = await import("./schemas/index");
+    if (agentSchemas[agentName]) {
+      const validationResult = validate(agentName, output);
+      if (!validationResult.success) {
+        console.log(`[orchestrator] ${agentDef.emoji} ${agentName} validation failed (attempt ${attempt}/${maxAttempts})`);
+
+        if (inGroup) {
+          // In a group: return failed result instead of escalating
+          db.prepare("UPDATE run_steps SET status = 'failed', output = ?, validation_errors = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
+            .run(output, JSON.stringify([{ attempt, errors: validationResult.errors, raw: validationResult.raw }]), runId, stepOrder);
+          broadcast(runId, { type: "step-failed", agent: agentName, step: stepOrder, emoji: agentDef.emoji, output: "Validation failed" });
+          return { agentName, status: "failed", output: `Validation failed: ${JSON.stringify(validationResult.errors)}` };
+        }
+
+        const cbResult = await handleValidationFail(ctx, validationResult, attempt, maxAttempts, validationAttempts, chainedInput);
 
         if (cbResult.outcome === "retry") {
           currentInput = cbResult.input;
-          console.log(`[orchestrator] Retrying ${agentName} (attempt ${attempt + 1}/${maxAttempts})`);
           continue;
         }
         if (cbResult.outcome === "abort") {
-          abortPipeline(ctx, `Aborted by user after ${maxAttempts} failed attempts`);
-          return;
+          abortPipeline(ctx, `Aborted by user after ${maxAttempts} validation failures`);
+          return { agentName, status: "failed", output: `Aborted after ${maxAttempts} validation failures` };
         }
         if (cbResult.outcome === "fix") {
           output = cbResult.output;
@@ -607,152 +780,179 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
           validationAttempts = [];
           currentInput = chainedInput + (cbResult.input ? `\n\n## Additional Instructions\n${cbResult.input}` : "");
           attempt = 0;
-          db.prepare("UPDATE run_steps SET attempt = 0 WHERE run_id = ? AND step_order = ?").run(runId, i);
+          db.prepare("UPDATE run_steps SET attempt = 0 WHERE run_id = ? AND step_order = ?").run(runId, stepOrder);
           continue;
         }
       }
-
-      // ── on_await_user: agent needs input ──
-      if (result.kind === "task" && result.status?.state === "input-required") {
-        const question = result.status.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "Agent needs your input";
-        const taskId = result.id;
-        console.log(`[orchestrator] ${agentDef.emoji} ${agentName} requires input (task ${taskId})`);
-
-        const cbResult = await handleAwaitUser(ctx, question, taskId);
-
-        if (cbResult.outcome === "wait_input") {
-          const userReply = cbResult.userReply;
-
-          // Check if this is a branching agent — inject branch agents into pipeline
-          if (agentDef.branches) {
-            const choice = userReply.trim().toLowerCase().startsWith("b") ? "b" : "a";
-            const branch = agentDef.branches[choice];
-            console.log(`[orchestrator] Fork: user chose ${choice.toUpperCase()} → ${branch.label} [${branch.agents.join(" → ")}]`);
-
-            output = `🔀 Branch ${choice.toUpperCase()}: ${branch.label} → [${branch.agents.join(" → ")}]`;
-            db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(output, runId, i);
-            broadcast(runId, { type: "step-completed", agent: agentName, step: i, emoji: agentDef.emoji, output });
-
-            const branchAgents = branch.agents;
-            const remaining = agentNames.slice(i + 1);
-            agentNames.splice(i + 1, remaining.length, ...branchAgents, ...remaining);
-
-            for (let j = 0; j < branchAgents.length; j++) {
-              const stepOrder = i + 1 + j;
-              db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')").run(uuidv4(), runId, branchAgents[j]!, stepOrder);
-            }
-            for (let j = 0; j < remaining.length; j++) {
-              const oldOrder = i + 1 + j;
-              const newOrder = i + 1 + branchAgents.length + j;
-              db.prepare("UPDATE run_steps SET step_order = ? WHERE run_id = ? AND agent_name = ? AND step_order = ?").run(newOrder, runId, remaining[j]!, oldOrder);
-            }
-
-            broadcast(runId, {
-              type: "pipeline-branched",
-              choice: choice.toUpperCase(),
-              label: branch.label,
-              injectedAgents: branchAgents.map(name => {
-                const def = AGENTS.find(a => a.name === name);
-                return { name, emoji: def?.emoji || "❓" };
-              }),
-              step: i,
-            });
-
-            await new Promise(r => setTimeout(r, 200));
-            break;
-          }
-
-          // Normal input-required: resume agent with user reply via SSE stream
-          const resumeStreamResult = await sendMessageStream(client, {
-            message: {
-              messageId: uuidv4(),
-              role: "user",
-              parts: [{ kind: "text", text: userReply }],
-              kind: "message",
-              taskId: cbResult.taskId,
-            },
-          });
-
-          const resumeResult = resumeStreamResult.result as any;
-          output = resumeResult.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
-            || (resumeResult as any).status?.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
-            || "(no output)";
-          break;
-        }
-      }
-
-      // Normal completion — extract output from artifacts (§9.3) or message parts
-      output = extractOutput(streamResult.events, result);
-
-      // ── on_change_request: detect change request markers in output ──
-      const changeRequestContext = detectChangeRequest(output);
-      if (changeRequestContext) {
-        console.log(`[orchestrator] ${agentDef.emoji} ${agentName} raised a change request`);
-        const crResult = await handleChangeRequest(ctx, changeRequestContext);
-        if (crResult.outcome === "continue") break;
-        if (crResult.outcome === "noop") { /* fall through to validation */ }
-      }
-
-      // ── on_pipeline_suggestion: detect pipeline suggestion markers in output ──
-      const pipelineSuggestion = detectPipelineSuggestion(output);
-      if (pipelineSuggestion) {
-        console.log(`[orchestrator] ${agentDef.emoji} ${agentName} suggested pipeline changes`);
-        const psResult = await handlePipelineSuggestion(ctx, pipelineSuggestion);
-        if (psResult.outcome === "modify_pipeline") {
-          applyPipelineModification(runId, i, agentNames, psResult.suggestion);
-          break;
-        }
-        if (psResult.outcome === "continue") break;
-        if (psResult.outcome === "noop") { /* fall through to validation */ }
-      }
-
-      // ── on_validation_fail: validate output against agent schema ──
-      const { agentSchemas } = await import("./schemas/index");
-      if (agentSchemas[agentName]) {
-        const validationResult = validate(agentName, output);
-        if (!validationResult.success) {
-          console.log(`[orchestrator] ${agentDef.emoji} ${agentName} validation failed (attempt ${attempt}/${maxAttempts})`);
-
-          const cbResult = await handleValidationFail(ctx, validationResult, attempt, maxAttempts, validationAttempts, chainedInput);
-
-          if (cbResult.outcome === "retry") {
-            currentInput = cbResult.input;
-            continue;
-          }
-          if (cbResult.outcome === "abort") {
-            abortPipeline(ctx, `Aborted by user after ${maxAttempts} validation failures`);
-            return;
-          }
-          if (cbResult.outcome === "fix") {
-            output = cbResult.output;
-            resumeStep(ctx);
-            break;
-          }
-          if (cbResult.outcome === "reset") {
-            resumeStep(ctx);
-            validationAttempts = [];
-            currentInput = chainedInput + (cbResult.input ? `\n\n## Additional Instructions\n${cbResult.input}` : "");
-            attempt = 0;
-            db.prepare("UPDATE run_steps SET attempt = 0 WHERE run_id = ? AND step_order = ?").run(runId, i);
-            continue;
-          }
-        }
-      }
-
-      // Validation passed (or no schema) — exit retry loop
-      break;
     }
 
-    // If we ended up in a branch, skip normal completion
-    if (agentDef.branches && output.startsWith("🔀")) {
+    // Validation passed (or no schema) — exit retry loop
+    break;
+  }
+
+  // If we ended up in a branch, return completed with branch output
+  if (agentDef.branches && output.startsWith("\ud83d\udd00")) {
+    return { agentName, status: "completed", output, pipelineSuggestion: capturedPipelineSuggestion };
+  }
+
+  // ── out_of_scope: extract items and create backlog tickets ──
+  processOutOfScope(runId, agentName, stepOrder, output);
+
+  // ── on_done: mark step completed, proceed to next agent ──
+  handleDone(ctx, output, validationAttempts);
+
+  return { agentName, status: "completed", output, pipelineSuggestion: capturedPipelineSuggestion };
+}
+
+// ── Pipeline Orchestrator ──────────────────────────────────────────────────
+
+async function executePipeline(runId: string, agentNames: string[], input: string, startFrom = 0) {
+  // Normalize pipeline: convert string[] to NormalizedGroup[]
+  // For backward compatibility, a flat string[] becomes single-agent groups
+  const pipelineSteps: PipelineStep[] = agentNames.map((name) => name);
+  const groups = normalizePipeline(pipelineSteps);
+  const totalSteps = getTotalStepCount(groups);
+  const allNames = getAllAgentNames(groups);
+
+  // Calculate which step order we're starting from
+  let stepOrder = 0;
+
+  for (let gIdx = 0; gIdx < groups.length; gIdx++) {
+    const group = groups[gIdx]!;
+
+    // Skip groups that are entirely before startFrom
+    if (stepOrder + group.agents.length <= startFrom) {
+      stepOrder += group.agents.length;
       continue;
     }
 
-    // ── out_of_scope: extract items and create backlog tickets ──
-    processOutOfScope(runId, agentName, i, output);
+    if (group.agents.length === 1) {
+      // ── Single-agent group: sequential execution (same as before) ──
+      const agentName = group.agents[0]!;
 
-    // ── on_done: mark step completed, proceed to next agent ──
-    handleDone(ctx, output, validationAttempts);
+      if (stepOrder < startFrom) {
+        stepOrder++;
+        continue;
+      }
+
+      const result = await executeAgent(runId, stepOrder, agentName, allNames, input, totalSteps);
+
+      if (result.status === "failed") {
+        // executeAgent already handled abort/fail for non-group agents
+        return;
+      }
+
+      // Handle branching: the agentNames array may have been modified
+      const agentDef = AGENTS.find((a) => a.name === agentName);
+      if (agentDef?.branches && result.output.startsWith("\ud83d\udd00")) {
+        // Re-normalize after branch injection — continue with updated agentNames
+        // The agentNames array was mutated by executeAgent for branch injection
+        stepOrder++;
+        continue;
+      }
+
+      stepOrder++;
+    } else {
+      // ── Multi-agent group: parallel execution ──
+      const groupId = uuidv4();
+
+      // Record group in DB
+      db.prepare("INSERT INTO run_groups (id, run_id, group_order, failure_strategy, status) VALUES (?, ?, ?, ?, 'running')")
+        .run(groupId, runId, gIdx, group.failureStrategy);
+
+      console.log(`[orchestrator] Starting parallel group ${gIdx} [${group.agents.join(", ")}] (strategy: ${group.failureStrategy})`);
+      broadcast(runId, {
+        type: "group-started",
+        groupOrder: gIdx,
+        agents: group.agents,
+        failureStrategy: group.failureStrategy,
+      });
+
+      // Update group_id on run_steps
+      for (let j = 0; j < group.agents.length; j++) {
+        db.prepare("UPDATE run_steps SET group_id = ?, group_order = ? WHERE run_id = ? AND step_order = ?")
+          .run(groupId, j, runId, stepOrder + j);
+      }
+
+      // Run all agents in parallel
+      const promises = group.agents.map((agentName, j) =>
+        executeAgent(runId, stepOrder + j, agentName, allNames, input, totalSteps, groupId)
+          .catch((err): AgentResult => ({
+            agentName,
+            status: "failed",
+            output: err instanceof Error ? err.message : String(err),
+          }))
+      );
+
+      const results = await Promise.allSettled(promises);
+      const agentResults: AgentResult[] = results.map((r) =>
+        r.status === "fulfilled" ? r.value : { agentName: "unknown", status: "failed" as const, output: String(r.reason) }
+      );
+
+      // Resolve group status
+      const groupStatus = resolveGroupStatus(agentResults, group.failureStrategy);
+      const mergedOutput = mergeGroupOutputs(agentResults);
+
+      // Collect deferred pipeline suggestions
+      const deferredSuggestions = agentResults
+        .filter((r) => r.pipelineSuggestion)
+        .map((r) => ({ agentName: r.agentName, suggestion: r.pipelineSuggestion! }));
+
+      // Finalize group
+      finalizeGroup(groupId, groupStatus, mergedOutput);
+
+      console.log(`[orchestrator] Group ${gIdx} completed: status=${groupStatus}, ${agentResults.filter(r => r.status === "completed").length}/${agentResults.length} succeeded`);
+      broadcast(runId, {
+        type: "group-completed",
+        groupOrder: gIdx,
+        status: groupStatus,
+        results: agentResults.map((r) => ({ agent: r.agentName, status: r.status })),
+      });
+
+      // Evaluate deferred pipeline suggestions at merge point
+      if (deferredSuggestions.length > 0) {
+        console.log(`[orchestrator] Evaluating ${deferredSuggestions.length} deferred pipeline suggestion(s) from group ${gIdx}`);
+        for (const { agentName, suggestion } of deferredSuggestions) {
+          const agentDef = AGENTS.find((a) => a.name === agentName);
+          const deferCtx: CallbackContext = {
+            runId,
+            stepIndex: stepOrder,
+            agentName,
+            agentEmoji: agentDef?.emoji ?? "\u2753",
+            agentSlug: agentName.toLowerCase(),
+            agentNames: allNames,
+            groupId,
+            broadcast,
+            pendingInputs,
+          };
+          const psResult = await handlePipelineSuggestion(deferCtx, suggestion);
+          if (psResult.outcome === "modify_pipeline") {
+            applyPipelineModification(runId, stepOrder, allNames, psResult.suggestion);
+            break; // Only apply one suggestion per group
+          }
+        }
+      }
+
+      // Handle group failure
+      if (groupStatus === "failed") {
+        console.log(`[orchestrator] Group ${gIdx} failed with strategy '${group.failureStrategy}' — aborting pipeline`);
+        db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(runId);
+        broadcast(runId, { type: "pipeline-failed", error: `Parallel group ${gIdx} failed (all agents)` });
+        return;
+      }
+
+      if (groupStatus === "partial") {
+        console.log(`[orchestrator] Group ${gIdx} partially failed — continuing with successful results (continue_partial)`);
+        broadcast(runId, {
+          type: "group-partial-fail",
+          groupOrder: gIdx,
+          failedAgents: agentResults.filter((r) => r.status === "failed").map((r) => r.agentName),
+          successAgents: agentResults.filter((r) => r.status === "completed").map((r) => r.agentName),
+        });
+      }
+
+      stepOrder += group.agents.length;
+    }
   }
 
   // Pipeline done

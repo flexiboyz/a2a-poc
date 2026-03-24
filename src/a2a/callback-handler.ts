@@ -25,7 +25,9 @@ export type CallbackEvent =
   | "on_change_request"
   | "on_pipeline_suggestion"
   | "on_validation_fail"
-  | "on_validation_fail_final";
+  | "on_validation_fail_final"
+  | "on_group_complete"
+  | "on_group_partial_fail";
 
 export type CallbackAction = string | { action: string; [key: string]: unknown };
 
@@ -49,6 +51,7 @@ export interface CallbackContext {
   agentEmoji: string;
   agentSlug: string;
   agentNames: string[];
+  groupId?: string | null;
   broadcast: (runId: string, data: any) => void;
   pendingInputs: Map<string, {
     resolve: (reply: string) => void;
@@ -84,6 +87,7 @@ let _config: CallbacksConfig | null = null;
 const VALID_CALLBACK_EVENTS: CallbackEvent[] = [
   "on_done", "on_fail", "on_await_user", "on_change_request",
   "on_pipeline_suggestion", "on_validation_fail", "on_validation_fail_final",
+  "on_group_complete", "on_group_partial_fail",
 ];
 
 const VALID_ACTIONS = [

@@ -13,6 +13,8 @@ defaults:
     action: retry_agent
     max: 3
   on_validation_fail_final: escalate_to_user
+  on_group_complete: next_agent
+  on_group_partial_fail: notify_user
 
 # Per-agent overrides — agents can customize any default callback
 overrides: {}
