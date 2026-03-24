@@ -178,6 +178,8 @@
     .badge-resumed { background: rgba(124,58,237,0.2); color: #7c3aed; }
     .badge-branched { background: rgba(124,58,237,0.2); color: #7c3aed; }
     .badge-failed { background: rgba(239,68,68,0.2); color: #ef4444; }
+    .badge-escalated { background: rgba(239,68,68,0.2); color: #ef4444; }
+    .badge-retrying { background: rgba(251,191,36,0.2); color: #fbbf24; }
     .badge-canceled { background: rgba(102,102,102,0.2); color: #666; }
     .step-result.failed { border-color: #ef4444; }
     .step-result.canceled { opacity: 0.4; }
@@ -367,12 +369,18 @@
       });
     }
 
-    window.sendReply = async (runId) => {
-      const input = document.getElementById('user-reply');
-      if (!input || !input.value.trim()) return;
-      const reply = input.value.trim();
-      input.disabled = true;
-      input.parentElement.querySelector('button').disabled = true;
+    window.sendReply = async (runId, directAction) => {
+      let reply;
+      if (directAction) {
+        reply = directAction;
+      } else {
+        const input = document.getElementById('user-reply');
+        if (!input || !input.value.trim()) return;
+        reply = input.value.trim();
+        input.disabled = true;
+      }
+      // Disable all buttons in the escalation/input prompt
+      document.querySelectorAll('.input-prompt button').forEach(b => b.disabled = true);
       await fetch(`${basePath}/api/runs/${runId}/reply`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -511,6 +519,44 @@
             const prompt = el.querySelector('.input-prompt');
             if (prompt) prompt.remove();
             el.querySelector('.step-output').innerHTML += '<br><span class="spinner"></span> Resuming with your input...';
+          }
+        }
+
+        if (data.type === 'step-retry') {
+          const el = document.getElementById(`step-${data.step}`);
+          if (el) {
+            el.querySelector('.badge').className = 'badge badge-retrying';
+            el.querySelector('.badge').textContent = `retry ${data.attempt}/${data.maxAttempts}`;
+            el.querySelector('.step-output').innerHTML = `<span class="spinner"></span> Retrying (attempt ${data.attempt + 1}/${data.maxAttempts})...`;
+          }
+        }
+
+        if (data.type === 'step-escalated') {
+          const el = document.getElementById(`step-${data.step}`);
+          if (el) {
+            el.classList.remove('running');
+            el.classList.add('failed');
+            el.querySelector('.badge').className = 'badge badge-escalated';
+            el.querySelector('.badge').textContent = 'escalated';
+            const attemptsHtml = (data.attempts || []).map((a, idx) =>
+              `<div style="margin:4px 0;padding:6px;background:#1a1a2e;border-radius:4px;font-size:0.8rem;">
+                <strong>Attempt ${a.attempt}:</strong> ${a.errors.map(e => `${e.path || 'root'}: expected ${e.expected}, got ${e.received}`).join('; ')}
+              </div>`
+            ).join('');
+            el.querySelector('.step-output').innerHTML =
+              `<div style="margin-bottom:8px;">${data.question}</div>` +
+              attemptsHtml +
+              `<div class="input-prompt">
+                <p>⚠️ Choose an action:</p>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+                  <button onclick="sendReply('${runId}','abort')" style="background:#ef4444;color:white;border:none;border-radius:6px;padding:0.5rem 1rem;font-weight:600;cursor:pointer;">Abort</button>
+                  <button onclick="sendReply('${runId}','retry')" style="background:#fbbf24;color:#0a0a0f;border:none;border-radius:6px;padding:0.5rem 1rem;font-weight:600;cursor:pointer;">Retry</button>
+                </div>
+                <div class="input-row" style="margin-top:0.5rem;">
+                  <input id="user-reply" placeholder="Or type fix:<yaml> or retry:<instructions>...">
+                  <button onclick="sendReply('${runId}')">Send →</button>
+                </div>
+              </div>`;
           }
         }
 
