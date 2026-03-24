@@ -58,6 +58,7 @@ export interface CallbackContext {
     question: string;
     isEscalation?: boolean;
   }>;
+  templateOverrides?: Record<string, Record<string, CallbackAction>>;
 }
 
 /** Result of a callback dispatch — tells the orchestrator what to do next */
@@ -181,8 +182,11 @@ export function resolveCallback(
 }
 
 /** Get max retry attempts for an agent (from on_validation_fail config) */
-export function getMaxRetries(agentName: string): number {
-  const cb = resolveCallback(agentName, "on_validation_fail");
+export function getMaxRetries(
+  agentName: string,
+  templateOverrides?: Record<string, Record<string, CallbackAction>>,
+): number {
+  const cb = resolveCallback(agentName, "on_validation_fail", templateOverrides);
   return cb.max ?? 3;
 }
 
@@ -248,7 +252,7 @@ export async function handleAgentFail(
   validationAttempts: Array<{ attempt: number; errors: any[]; raw: string }>,
   chainedInput: string,
 ): Promise<CallbackResult> {
-  const cb = resolveCallback(ctx.agentName, "on_fail");
+  const cb = resolveCallback(ctx.agentName, "on_fail", ctx.templateOverrides);
 
   // Track as validation failure
   validationAttempts.push({
@@ -343,7 +347,7 @@ export function handleDone(
   output: string,
   validationAttempts: Array<{ attempt: number; errors: any[]; raw: string }>,
 ): CallbackResult {
-  const cb = resolveCallback(ctx.agentName, "on_done");
+  const cb = resolveCallback(ctx.agentName, "on_done", ctx.templateOverrides);
   const errorsJson = validationAttempts.length > 0 ? JSON.stringify(validationAttempts) : null;
   db.prepare("UPDATE run_steps SET status = 'completed', output = ?, validation_errors = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
     .run(output, errorsJson, ctx.runId, ctx.stepIndex);
@@ -424,7 +428,7 @@ export async function handleChangeRequest(
   ctx: CallbackContext,
   changeContext: string,
 ): Promise<CallbackResult> {
-  const cb = resolveCallback(ctx.agentName, "on_change_request");
+  const cb = resolveCallback(ctx.agentName, "on_change_request", ctx.templateOverrides);
 
   if (cb.action === "call_agent") {
     const targetAgent = cb.agent ?? "Assembler";
@@ -453,7 +457,7 @@ export async function handlePipelineSuggestion(
   ctx: CallbackContext,
   suggestion: string,
 ): Promise<CallbackResult> {
-  const cb = resolveCallback(ctx.agentName, "on_pipeline_suggestion");
+  const cb = resolveCallback(ctx.agentName, "on_pipeline_suggestion", ctx.templateOverrides);
 
   if (cb.action === "pause_and_notify_user") {
     db.prepare("UPDATE run_steps SET status = 'waiting_user' WHERE run_id = ? AND step_order = ?")

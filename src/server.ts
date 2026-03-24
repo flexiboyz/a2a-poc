@@ -555,13 +555,20 @@ function extractOutput(events: any[], result: any): string {
 // ── Pipeline Orchestrator ──────────────────────────────────────────────────
 
 async function executePipeline(runId: string, agentNames: string[], input: string, startFrom = 0) {
+  // Resolve template overrides if pipeline was created from a template
+  const run = db.prepare("SELECT pipeline_id FROM runs WHERE id = ?").get(runId) as any;
+  const pipeline = run ? db.prepare("SELECT template_name FROM pipelines WHERE id = ?").get(run.pipeline_id) as any : null;
+  const templateName = pipeline?.template_name;
+  const template = templateName ? resolveTemplate(templateName) : null;
+  const templateOverrides = template?.callback_overrides;
+
   for (let i = startFrom; i < agentNames.length; i++) {
     const agentName = agentNames[i]!;
     const agentDef = AGENTS.find((a) => a.name === agentName);
     if (!agentDef) throw new Error(`Unknown agent: ${agentName}`);
 
     const slug = agentName.toLowerCase();
-    const maxAttempts = getMaxRetries(agentName);
+    const maxAttempts = getMaxRetries(agentName, templateOverrides);
 
     // Build callback context for this step
     const ctx: CallbackContext = {
@@ -573,6 +580,7 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
       agentNames,
       broadcast,
       pendingInputs,
+      ...(templateOverrides ? { templateOverrides } : {}),
     };
 
     // Update step → running
