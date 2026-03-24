@@ -18,6 +18,7 @@ import { A2AClient } from "@a2a-js/sdk/client";
 import type { Message, Task } from "@a2a-js/sdk";
 import db from "./db";
 import { validate, formatRetryFeedback, type ValidationFailure } from "./a2a/validator";
+import { buildPipelineContext, formatPipelineContextYaml } from "./a2a/spawner";
 import YAML from "js-yaml";
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -218,8 +219,6 @@ app.get("/api/runs/:id/stream", (req, res) => {
 // ── Pipeline Orchestrator ──────────────────────────────────────────────────
 
 async function executePipeline(runId: string, agentNames: string[], input: string) {
-  let previousOutput = "";
-
   for (let i = 0; i < agentNames.length; i++) {
     const agentName = agentNames[i];
     const agentDef = AGENTS.find((a) => a.name === agentName);
@@ -231,10 +230,13 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
     db.prepare("UPDATE run_steps SET status = 'running', started_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(runId, i);
     broadcast(runId, { type: "step-started", agent: agentName, step: i, emoji: agentDef.emoji });
 
-    // Build chained prompt
-    const chainedInput = previousOutput
-      ? `## Original Topic\n${input}\n\n## Previous Agent Output\n${previousOutput}\n\n## Your Task\nBuild on the previous agent's work. You are step ${i + 1}/${agentNames.length}.`
-      : `## Topic\n${input}\n\nYou are the first agent in the pipeline (step 1/${agentNames.length}).`;
+    // Build accumulated context (§7)
+    const pipelineContext = buildPipelineContext(runId, i, input, agentNames.length);
+    const contextYaml = formatPipelineContextYaml(pipelineContext);
+
+    const chainedInput = i === 0
+      ? `## Topic\n${input}\n\nYou are the first agent in the pipeline (step 1/${agentNames.length}).`
+      : `## Pipeline Context\n\`\`\`yaml\n${contextYaml}\`\`\`\n\n## Your Task\nBuild on previous agents' work. You are step ${i + 1}/${agentNames.length}.`;
 
     // Discover & call agent via A2A — same server, sub-path
     const cardUrl = `${BASE_URL}/${slug}/.well-known/agent-card.json`;
@@ -408,7 +410,6 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
           // Small delay to ensure the UI receives the branch event before step events
           await new Promise(r => setTimeout(r, 200));
 
-          previousOutput = output;
           break; // Exit retry loop — branching handled
         }
 
@@ -511,8 +512,6 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
     if (agentDef.branches && output.startsWith("🔀")) {
       continue;
     }
-
-    previousOutput = output;
 
     // Update step → completed (store validation_errors if any attempts occurred)
     const errorsJson = validationAttempts.length > 0 ? JSON.stringify(validationAttempts) : null;
