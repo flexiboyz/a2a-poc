@@ -16,6 +16,7 @@ import type { AgentDef } from "./agents/create-agent";
 import { createCipherRouter } from "./agents/cipher";
 import { A2AClient } from "@a2a-js/sdk/client";
 import type { Message, Task } from "@a2a-js/sdk";
+import { sendMessageStream } from "./a2a/client";
 import db from "./db";
 import { validate } from "./a2a/validator";
 import { buildPipelineContext, formatPipelineContextYaml } from "./a2a/spawner";
@@ -279,7 +280,7 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
         broadcast(runId, { type: "step-retry", agent: agentName, step: i, emoji: agentDef.emoji, attempt, maxAttempts });
       }
 
-      const response = await client.sendMessage({
+      const streamResult = await sendMessageStream(client, {
         message: {
           messageId: uuidv4(),
           role: "user",
@@ -288,7 +289,7 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
         },
       });
 
-      const result = (response as any).result ?? response;
+      const result = streamResult.result as any;
 
       // ── on_fail: agent returned "failed" state ──
       if (result.kind === "task" && result.status?.state === "failed") {
@@ -371,8 +372,8 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
             break;
           }
 
-          // Normal input-required: resume agent with user reply
-          const resumeResponse = await client.sendMessage({
+          // Normal input-required: resume agent with user reply via SSE stream
+          const resumeStreamResult = await sendMessageStream(client, {
             message: {
               messageId: uuidv4(),
               role: "user",
@@ -382,9 +383,9 @@ async function executePipeline(runId: string, agentNames: string[], input: strin
             },
           });
 
-          const resumeResult = (resumeResponse as any).result ?? resumeResponse;
+          const resumeResult = resumeStreamResult.result as any;
           output = resumeResult.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
-            || resumeResult.status?.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
+            || (resumeResult as any).status?.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
             || "(no output)";
           break;
         }

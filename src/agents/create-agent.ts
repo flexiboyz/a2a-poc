@@ -57,7 +57,7 @@ export function createAgentRouter(def: AgentDef, baseUrl: string): Router {
     version: "0.1.0",
     url: `${baseUrl}/${slug}/a2a/jsonrpc`,
     skills: [{ id: def.skill, name: def.skill, description: def.description, tags: [def.skill] }],
-    capabilities: { pushNotifications: false },
+    capabilities: { pushNotifications: false, streaming: true },
     defaultInputModes: ["text"],
     defaultOutputModes: ["text"],
   };
