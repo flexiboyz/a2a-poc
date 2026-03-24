@@ -6,7 +6,11 @@
  */
 
 import { readFileSync } from "fs";
-import { resolve } from "path";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 import YAML from "js-yaml";
 import { v4 as uuidv4 } from "uuid";
 import db from "../db.js";

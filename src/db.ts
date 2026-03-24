@@ -3,12 +3,16 @@
  */
 
 import Database from "better-sqlite3";
-import { resolve } from "path";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
+import { mkdirSync } from "fs";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const DB_PATH = resolve(__dirname, "../data/a2a-poc.db");
 
 // Ensure data dir
-import { mkdirSync } from "fs";
 mkdirSync(resolve(__dirname, "../data"), { recursive: true });
 
 const db: import("better-sqlite3").Database = new Database(DB_PATH);
