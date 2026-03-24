@@ -1,3 +1,5 @@
+import "dotenv/config";
+
 /**
  * A2A POC — Single Express server + 3 agents + orchestrator + UI
  *

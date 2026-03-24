@@ -87,7 +87,7 @@ class CipherExecutor implements AgentExecutor {
     try {
       console.log(`[🔐 Cipher] Calling ACP Claude via Gateway...`);
       let cumulativeUsage = emptyUsage();
-      const gatewayResult = await invokeGatewayShared(fullBrief);
+      const gatewayResult = await invokeGatewayShared(fullBrief, "Cipher");
       const rawOutput = gatewayResult.output;
       cumulativeUsage = accumulateUsage(cumulativeUsage, gatewayResult.usage);
       console.log(`[🔐 Cipher] → gateway done (${rawOutput.length} chars, ${gatewayResult.usage.total_tokens} tokens${gatewayResult.usage.is_estimated ? " est." : ""})`);
@@ -97,7 +97,7 @@ class CipherExecutor implements AgentExecutor {
         "Cipher",
         rawOutput,
         async (feedback) => {
-          const retryResult = await invokeGatewayShared(`${CIPHER_BRIEF}\n\n${feedback}`);
+          const retryResult = await invokeGatewayShared(`${CIPHER_BRIEF}\n\n${feedback}`, "Cipher");
           cumulativeUsage = accumulateUsage(cumulativeUsage, retryResult.usage);
           return retryResult.output;
         },

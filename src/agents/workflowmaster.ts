@@ -114,7 +114,7 @@ class WorkflowMasterExecutor implements AgentExecutor {
     try {
       console.log(`[🏗️ WorkflowMaster] Calling ACP Claude via Gateway...`);
       let cumulativeUsage = emptyUsage();
-      const gatewayResult = await invokeGatewayShared(fullBrief);
+      const gatewayResult = await invokeGatewayShared(fullBrief, "WorkflowMaster");
       const rawOutput = gatewayResult.output;
       cumulativeUsage = accumulateUsage(cumulativeUsage, gatewayResult.usage);
       console.log(`[🏗️ WorkflowMaster] → gateway done (${rawOutput.length} chars, ${gatewayResult.usage.total_tokens} tokens${gatewayResult.usage.is_estimated ? " est." : ""})`);
@@ -124,7 +124,7 @@ class WorkflowMasterExecutor implements AgentExecutor {
         "WorkflowMaster",
         rawOutput,
         async (feedback) => {
-          const retryResult = await invokeGatewayShared(`${SM_BRIEF}\n\n${feedback}`);
+          const retryResult = await invokeGatewayShared(`${SM_BRIEF}\n\n${feedback}`, "WorkflowMaster");
           cumulativeUsage = accumulateUsage(cumulativeUsage, retryResult.usage);
           return retryResult.output;
         },
