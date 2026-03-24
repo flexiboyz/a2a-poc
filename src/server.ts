@@ -14,6 +14,7 @@ import { resolve } from "path";
 import { createAgentRouter } from "./agents/create-agent";
 import type { AgentDef } from "./agents/create-agent";
 import { createCipherRouter } from "./agents/cipher";
+import { createWorkflowMasterRouter } from "./agents/workflowmaster";
 import { A2AClient } from "@a2a-js/sdk/client";
 import type { Message, Task } from "@a2a-js/sdk";
 import { sendMessageStream } from "./a2a/client";
@@ -74,6 +75,10 @@ for (const def of AGENTS) {
 // Mount Cipher (real ACP Claude agent)
 app.use("/cipher", createCipherRouter(BASE_URL));
 console.log(`[🤖] Mounted 🔐 Cipher → /cipher/ (ACP Claude)`);
+
+// Mount WorkflowMaster (real ACP Claude agent)
+app.use("/workflowmaster", createWorkflowMasterRouter(BASE_URL));
+console.log(`[🤖] Mounted 🏗️ WorkflowMaster → /workflowmaster/ (ACP Claude)`);
 
 // SSE clients for live updates
 const sseClients = new Map<string, express.Response[]>();
@@ -622,6 +627,184 @@ app.post("/api/random-run", async (req, res) => {
     broadcast(runId, { type: "pipeline-failed", error: err.message });
   });
 });
+
+// ── API: SM-first pipeline run ──────────────────────────────────────────────
+
+app.post("/api/sm-run", async (req, res) => {
+  const input = req.body.input ?? "Analyze this topic";
+
+  const runId = uuidv4();
+  const pipelineId = uuidv4();
+
+  // Create pipeline placeholder — agents TBD after SM runs
+  db.prepare("INSERT INTO pipelines (id, name, agents) VALUES (?, ?, ?)").run(pipelineId, "SM Pipeline", JSON.stringify([]));
+  db.prepare("INSERT INTO runs (id, pipeline_id, status, input) VALUES (?, ?, 'running', ?)").run(runId, pipelineId, input);
+
+  // Step 0: WorkflowMaster
+  db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')").run(uuidv4(), runId, "WorkflowMaster", 0);
+
+  res.json({ runId, pipelineId, status: "running", agents: ["WorkflowMaster", "..."] });
+
+  // Execute SM-first pipeline in background
+  executeSMPipeline(runId, pipelineId, input).catch((err) => {
+    console.error(`[orchestrator] SM pipeline ${runId} failed:`, err);
+    db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(runId);
+    broadcast(runId, { type: "pipeline-failed", error: err.message });
+  });
+});
+
+/**
+ * SM-first pipeline: run WorkflowMaster as step 0, extract pipeline from output,
+ * then execute the derived pipeline via executePipeline().
+ */
+async function executeSMPipeline(runId: string, pipelineId: string, input: string) {
+  // ── Step 0: Run WorkflowMaster ────────────────────────────────────────
+  db.prepare("UPDATE run_steps SET status = 'running', started_at = datetime('now') WHERE run_id = ? AND step_order = 0").run(runId);
+  broadcast(runId, { type: "step-started", agent: "WorkflowMaster", step: 0, emoji: "🏗️" });
+
+  const cardUrl = `${BASE_URL}/workflowmaster/.well-known/agent-card.json`;
+  const client = await A2AClient.fromCardUrl(cardUrl);
+
+  const smInput = `## Task\n${input}\n\nProduce a qualification and pipeline for this task.`;
+
+  const streamResult = await sendMessageStream(client, {
+    message: {
+      messageId: uuidv4(),
+      role: "user",
+      parts: [{ kind: "text", text: smInput }],
+      kind: "message",
+    },
+  });
+
+  const result = streamResult.result as any;
+
+  // Check for failure
+  if (result.kind === "task" && result.status?.state === "failed") {
+    const errorMsg = result.status.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("") || "WorkflowMaster failed";
+    db.prepare("UPDATE run_steps SET status = 'failed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = 0").run(errorMsg, runId);
+    broadcast(runId, { type: "step-failed", agent: "WorkflowMaster", step: 0, emoji: "🏗️", error: errorMsg });
+    throw new Error(`WorkflowMaster failed: ${errorMsg}`);
+  }
+
+  // Extract output
+  const smOutput = result.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
+    || result.status?.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
+    || "";
+
+  // Validate against WorkflowMaster schema
+  const validationResult = validate("WorkflowMaster", smOutput);
+  if (!validationResult.success) {
+    const errors = JSON.stringify(validationResult.errors, null, 2);
+    console.error(`[orchestrator] WorkflowMaster output validation failed:`, errors);
+    db.prepare("UPDATE run_steps SET status = 'failed', output = ?, validation_errors = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = 0")
+      .run(smOutput, errors, runId);
+    broadcast(runId, { type: "step-failed", agent: "WorkflowMaster", step: 0, emoji: "🏗️", error: "Validation failed" });
+    throw new Error(`WorkflowMaster output validation failed`);
+  }
+
+  // Parse validated output to extract pipeline
+  const parsed = YAML.load(smOutput) as any;
+  const derivedAgents: string[] = parsed.output.pipeline;
+
+  console.log(`[orchestrator] SM derived pipeline: [${derivedAgents.join(" → ")}]`);
+
+  // Mark SM step done
+  db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = 0").run(smOutput, runId);
+  broadcast(runId, { type: "step-completed", agent: "WorkflowMaster", step: 0, emoji: "🏗️", output: smOutput });
+
+  // ── Derive pipeline from SM output ────────────────────────────────────
+  // Update pipeline with derived agents (SM + derived)
+  const allAgents = ["WorkflowMaster", ...derivedAgents];
+  db.prepare("UPDATE pipelines SET agents = ? WHERE id = ?").run(JSON.stringify(allAgents), pipelineId);
+
+  // Create run_steps for derived agents
+  for (let i = 0; i < derivedAgents.length; i++) {
+    db.prepare("INSERT INTO run_steps (id, run_id, agent_name, step_order, status) VALUES (?, ?, ?, ?, 'pending')")
+      .run(uuidv4(), runId, derivedAgents[i], i + 1);
+  }
+
+  broadcast(runId, {
+    type: "sm-pipeline-derived",
+    agents: derivedAgents,
+    qualification: parsed.output.qualification,
+    acceptance_criteria: parsed.output.acceptance_criteria,
+  });
+
+  // ── Execute derived pipeline ──────────────────────────────────────────
+  // Pass SM YAML as context to downstream agents
+  const smContext = `## WorkflowMaster Output\n\`\`\`yaml\n${smOutput}\n\`\`\`\n\n## Original Task\n${input}`;
+
+  // Re-use executePipeline but with offset step orders
+  // We need to run the derived agents starting from step_order 1
+  for (let i = 0; i < derivedAgents.length; i++) {
+    const agentName = derivedAgents[i]!;
+    const stepOrder = i + 1;
+    const slug = agentName.toLowerCase();
+
+    // Check if agent exists (simulated or real)
+    const agentDef = AGENTS.find((a) => a.name === agentName);
+    const isRealAgent = ["Cipher", "WorkflowMaster"].includes(agentName);
+
+    if (!agentDef && !isRealAgent) {
+      console.warn(`[orchestrator] Unknown agent in SM pipeline: ${agentName} — skipping`);
+      db.prepare("UPDATE run_steps SET status = 'failed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
+        .run(`Unknown agent: ${agentName}`, runId, stepOrder);
+      broadcast(runId, { type: "step-failed", agent: agentName, step: stepOrder, emoji: "❓", error: `Unknown agent: ${agentName}` });
+      continue;
+    }
+
+    db.prepare("UPDATE run_steps SET status = 'running', started_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(runId, stepOrder);
+    broadcast(runId, { type: "step-started", agent: agentName, step: stepOrder, emoji: agentDef?.emoji ?? "🤖" });
+
+    // Build context with SM output + accumulated pipeline context
+    const pipelineContext = buildPipelineContext(runId, stepOrder, input, allAgents.length);
+    const contextYaml = formatPipelineContextYaml(pipelineContext);
+
+    const agentInput = `## Pipeline Context\n\`\`\`yaml\n${contextYaml}\`\`\`\n\n## Your Task\nBuild on previous agents' work. You are step ${stepOrder + 1}/${allAgents.length}.`;
+
+    try {
+      const agentCardUrl = `${BASE_URL}/${slug}/.well-known/agent-card.json`;
+      const agentClient = await A2AClient.fromCardUrl(agentCardUrl);
+
+      const agentStreamResult = await sendMessageStream(agentClient, {
+        message: {
+          messageId: uuidv4(),
+          role: "user",
+          parts: [{ kind: "text", text: agentInput }],
+          kind: "message",
+        },
+      });
+
+      const agentResult = agentStreamResult.result as any;
+      const output = agentResult.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
+        || agentResult.status?.message?.parts?.map((p: any) => ("text" in p ? p.text : "")).join("")
+        || "(no output)";
+
+      // Validate if schema exists
+      const { agentSchemas } = await import("./schemas/index");
+      if (agentSchemas[agentName]) {
+        const valResult = validate(agentName, output);
+        if (!valResult.success) {
+          console.warn(`[orchestrator] ${agentName} validation failed in SM pipeline — continuing with raw output`);
+        }
+      }
+
+      db.prepare("UPDATE run_steps SET status = 'completed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?").run(output, runId, stepOrder);
+      broadcast(runId, { type: "step-completed", agent: agentName, step: stepOrder, emoji: agentDef?.emoji ?? "🤖", output });
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[orchestrator] SM pipeline agent ${agentName} failed:`, errorMsg);
+      db.prepare("UPDATE run_steps SET status = 'failed', output = ?, ended_at = datetime('now') WHERE run_id = ? AND step_order = ?")
+        .run(errorMsg, runId, stepOrder);
+      broadcast(runId, { type: "step-failed", agent: agentName, step: stepOrder, emoji: agentDef?.emoji ?? "🤖", error: errorMsg });
+      // Continue to next agent — don't abort entire pipeline on single failure
+    }
+  }
+
+  // Pipeline done
+  db.prepare("UPDATE runs SET status = 'completed' WHERE id = ?").run(runId);
+  broadcast(runId, { type: "pipeline-completed" });
+}
 
 // ── Start ──────────────────────────────────────────────────────────────────
 
