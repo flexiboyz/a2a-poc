@@ -144,11 +144,29 @@ export function resetCallbacksCache(): void {
 
 // ── Resolution ───────────────────────────────────────────────────────────────
 
-/** Resolve callback for agent+event — check overrides first, fall back to defaults */
-export function resolveCallback(agentName: string, event: CallbackEvent): ResolvedCallback {
+/**
+ * Resolve callback for agent+event.
+ * Precedence: agent overrides (callbacks.yaml) > template overrides > defaults
+ */
+export function resolveCallback(
+  agentName: string,
+  event: CallbackEvent,
+  templateOverrides?: Record<string, Record<string, CallbackAction>>,
+): ResolvedCallback {
   const config = loadCallbacks();
-  const raw: CallbackAction | undefined =
-    config.overrides?.[agentName]?.[event] ?? config.defaults[event];
+
+  // 1. Agent-level override (callbacks.yaml overrides section)
+  let raw: CallbackAction | undefined = config.overrides?.[agentName]?.[event];
+
+  // 2. Template-level override
+  if (!raw && templateOverrides) {
+    raw = templateOverrides[agentName]?.[event];
+  }
+
+  // 3. Default
+  if (!raw) {
+    raw = config.defaults[event];
+  }
 
   if (!raw) {
     return { action: "noop" };
