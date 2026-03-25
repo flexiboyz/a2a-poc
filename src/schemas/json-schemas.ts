@@ -8,7 +8,7 @@ const commonProperties = {
   task_seq: { type: "integer" },
   iteration: { type: "integer" },
   status: { type: "string", enum: ["done", "fail", "waiting_user"] },
-  waiting_reason: { type: ["string", "null"] },
+  waiting_reason: { type: "string", description: "Reason for waiting_user status, or empty string if not applicable" },
   out_of_scope: {
     type: "array",
     items: {
@@ -23,19 +23,16 @@ const commonProperties = {
     },
   },
   pipeline_suggestion: {
-    oneOf: [
-      { type: "null" },
-      {
-        type: "object",
-        properties: {
-          action: { type: "string", enum: ["insert_after_current", "insert_before_next", "replace_next"] },
-          agent: { type: "string" },
-          reason: { type: "string" },
-        },
-        required: ["action", "agent", "reason"],
-        additionalProperties: false,
-      },
-    ],
+    type: "object",
+    description: "Optional pipeline suggestion. Set has_suggestion=false when no suggestion, true with action/agent/reason when suggesting.",
+    properties: {
+      has_suggestion: { type: "boolean" },
+      action: { type: "string", enum: ["insert_after_current", "insert_before_next", "replace_next"] },
+      agent: { type: "string" },
+      reason: { type: "string" },
+    },
+    required: ["has_suggestion"],
+    additionalProperties: false,
   },
 };
 
