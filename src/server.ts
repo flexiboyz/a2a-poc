@@ -225,13 +225,28 @@ app.get("/api/metrics", (_req, res) => {
 // ── API: List available agents ─────────────────────────────────────────────
 
 app.get("/api/agents", (_req, res) => {
+  // Import AGENT_MODELS from gateway to show current model per agent
+  const AGENT_MODELS: Record<string, string> = {
+    WorkflowMaster: process.env["MODEL_WORKFLOWMASTER"] ?? "google/gemini-2.5-flash",
+    Cipher:         process.env["MODEL_CIPHER"] ?? "google/gemini-2.5-pro",
+    Assembler:      process.env["MODEL_ASSEMBLER"] ?? "google/gemini-2.5-pro",
+    Sentinel:       process.env["MODEL_SENTINEL"] ?? "google/gemini-2.5-pro",
+    Hammer:         process.env["MODEL_HAMMER"] ?? "google/gemini-2.5-flash",
+    Prism:          process.env["MODEL_PRISM"] ?? "google/gemini-2.5-flash",
+    Bastion:        process.env["MODEL_BASTION"] ?? "google/gemini-2.5-flash",
+    default:        process.env["MODEL_DEFAULT"] ?? "google/gemini-2.5-flash",
+  };
+
   res.json(AGENTS.map((a) => {
     const slug = a.name.toLowerCase();
+    const model = AGENT_MODELS[a.name] ?? AGENT_MODELS["default"] ?? "google/gemini-2.5-flash";
     return {
       name: a.name,
       emoji: a.emoji,
       skill: a.skill,
       description: a.description,
+      model: model.split("/").pop(), // Short name (e.g. "gemini-2.5-pro")
+      modelFull: model,              // Full id (e.g. "google/gemini-2.5-pro")
       requiresInput: a.requiresInput ?? false,
       cardUrl: `${BASE_URL}/${slug}/.well-known/agent-card.json`,
     };

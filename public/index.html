@@ -48,6 +48,7 @@
     .agent-card .name { font-weight: 600; margin-top: 0.3rem; }
     .agent-card .desc { font-size: 0.75rem; color: #888; margin-top: 0.2rem; }
     .agent-card .skill { font-size: 0.65rem; color: #7c3aed; margin-top: 0.3rem; padding: 2px 8px; background: rgba(124,58,237,0.1); border-radius: 4px; display: inline-block; }
+    .agent-card .model-tag { font-size: 0.6rem; color: #22c55e; margin-top: 0.25rem; padding: 1px 6px; background: rgba(34,197,94,0.1); border-radius: 4px; display: inline-block; font-family: monospace; }
     .agent-card.dragging { opacity: 0.4; }
 
     /* ── Main Area ─────────────────────────────── */
@@ -466,6 +467,7 @@
           <div class="name">${a.name}</div>
           <div class="desc">${a.description}</div>
           <div class="skill">${a.skill}</div>
+          ${a.model ? `<div class="model-tag" title="${a.modelFull || a.model}">${a.model}</div>` : ''}
         </div>
       `).join('');
 
