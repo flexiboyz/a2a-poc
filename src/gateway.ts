@@ -34,11 +34,12 @@ const AGENT_MODELS: Record<string, string> = {
 // ── Model pricing (per 1M tokens) ────────────────────────────────────────────
 
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  "google/gemini-2.5-pro": { input: 3.0, output: 15.0 },
-  "anthropic/claude-opus-4-20250514": { input: 15.0, output: 75.0 },
-  "anthropic/claude-haiku-3-5-20241022": { input: 1.0, output: 5.0 },
-  "google/gemini-2.5-flash": { input: 0.15, output: 0.60 },
   "google/gemini-2.5-pro": { input: 1.25, output: 10.0 },
+  "google/gemini-2.5-flash": { input: 0.15, output: 0.60 },
+  "anthropic/claude-opus-4-20250514": { input: 15.0, output: 75.0 },
+  "anthropic/claude-opus-4-6": { input: 15.0, output: 75.0 },
+  "anthropic/claude-sonnet-4-6": { input: 3.0, output: 15.0 },
+  "anthropic/claude-haiku-3-5-20241022": { input: 1.0, output: 5.0 },
   default: { input: 3.0, output: 15.0 },
 };
 
@@ -94,10 +95,9 @@ async function invokeOpenRouter(task: string, agentName: string, jsonSchema?: Re
   const client = getClient();
 
   // Build response_format if JSON schema provided (structured outputs)
-  // Only for models that support it (Gemini, OpenAI) — NOT Anthropic
+  // OpenRouter translates response_format → output_config.format for Anthropic models
   let responseFormat: any = undefined;
-  const supportsStructuredOutput = !model.startsWith("anthropic/");
-  if (jsonSchema && supportsStructuredOutput) {
+  if (jsonSchema) {
     responseFormat = {
       type: "json_schema" as const,
       json_schema: {
@@ -107,8 +107,6 @@ async function invokeOpenRouter(task: string, agentName: string, jsonSchema?: Re
       },
     };
     console.log(`[gateway] ${agentName} → structured output enabled (JSON Schema)`);
-  } else if (jsonSchema) {
-    console.log(`[gateway] ${agentName} → ${model} doesn't support structured output, using prompt-only`);
   }
 
   try {
