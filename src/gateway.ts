@@ -131,7 +131,7 @@ async function invokeOpenRouter(task: string, agentName: string, jsonSchema?: Re
 
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        throw new Error(`OpenRouter ${res.status}: ${text.slice(0, 500)}`);
+        throw new Error(`OpenRouter ${res.status}: ${text}`);
       }
 
       const data = await res.json() as any;
@@ -227,7 +227,7 @@ async function invokeOpenClawGateway(task: string): Promise<GatewayResult> {
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Gateway ${res.status}: ${text.slice(0, 500)}`);
+      throw new Error(`Gateway ${res.status}: ${text}`);
     }
 
     const data = (await res.json()) as Record<string, any>;
