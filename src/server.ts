@@ -83,17 +83,6 @@ const AGENTS: AgentDef[] = [
   { name: "Bastion", emoji: "🏰", skill: "security", description: "Security audit — deep OWASP review, auth, injection, data leaks" },
   { name: "Prism", emoji: "🌈", skill: "design", description: "UX design — mockups, component specs, user flows, image-gen prompts" },
   { name: "Moodboard", emoji: "🎨", skill: "moodboard", description: "Visual inspiration — upload images, get structured moodboard", requiresInput: true },
-  // Toy agents for testing
-  { name: "Spark", emoji: "✨", skill: "brainstorm", description: "Creative visionary — generates wild ideas" },
-  { name: "Flint", emoji: "🪨", skill: "validate", description: "Pragmatic builder — validates feasibility", requiresInput: true },
-  { name: "Ghost", emoji: "👻", skill: "critique", description: "Silent critic — finds hidden flaws" },
-  { name: "Glitch", emoji: "💀", skill: "chaos", description: "Chaos agent — 50% chance of failure", alwaysFails: 0.5 },
-  { name: "Loop", emoji: "🔁", skill: "rerun", description: "Checkpoint — asks to re-run the pipeline", askRerun: true },
-  { name: "Fork", emoji: "🔀", skill: "branch", description: "Decision point — routes to different agents", branches: {
-    question: "Which approach do you want for this topic?",
-    a: { label: "Creative deep-dive", agents: ["Spark", "Ghost"] },
-    b: { label: "Pragmatic validation", agents: ["Flint", "Glitch"] },
-  }},
 ];
 
 // ── Single Express App ─────────────────────────────────────────────────────
