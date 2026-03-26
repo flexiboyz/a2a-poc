@@ -204,12 +204,29 @@ class CanvasExecutor implements AgentExecutor {
 
       // Strategy 2: Regex for prompt fields (handles YAML-wrapped or escaped JSON)
       if (mockupPrompts.length === 0) {
-        // Match "prompt": "..." with content longer than 30 chars
-        const promptMatches = text.matchAll(/"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"/g);
-        for (const m of promptMatches) {
-          if (m[1] && m[1].length > 30) {
-            mockupPrompts.push({ name: "extracted-prompt", prompt: m[1].replace(/\\"/g, '"').replace(/\\n/g, "\n") });
+        // Try multiple quote styles — YAML may use single quotes or no quotes
+        const patterns = [
+          /"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"/g,           // "prompt": "..."
+          /prompt:\s*'((?:[^'\\]|\\.)*)'/g,                 // prompt: '...'
+          /prompt:\s*[|>]-?\s*\n([\s\S]*?)(?=\n\s*\w+:|$)/g, // prompt: | (YAML block)
+          /prompt:\s+"((?:[^"\\]|\\.)*)"/g,                 // prompt: "..." (YAML style)
+        ];
+        for (const pattern of patterns) {
+          const matches = text.matchAll(pattern);
+          for (const m of matches) {
+            if (m[1] && m[1].trim().length > 30) {
+              mockupPrompts.push({ name: "extracted-prompt", prompt: m[1].trim().replace(/\\"/g, '"').replace(/\\n/g, "\n") });
+            }
           }
+          if (mockupPrompts.length > 0) break;
+        }
+      }
+
+      // Strategy 2b: Look for long descriptive text near "mockup" keywords
+      if (mockupPrompts.length === 0) {
+        const mockupSection = text.match(/mockup[_\s]*description[\s\S]{0,100}?prompt[:\s]+([\s\S]{50,800}?)(?=\n\s*(?:name|viewport|accessibility|\}|\]))/i);
+        if (mockupSection?.[1]) {
+          mockupPrompts.push({ name: "regex-mockup", prompt: mockupSection[1].trim() });
         }
       }
 
