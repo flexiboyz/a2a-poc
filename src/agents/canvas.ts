@@ -97,6 +97,7 @@ async function generateImage(
 
   const data = await res.json() as any;
   const content = data?.choices?.[0]?.message?.content ?? "";
+  const images = data?.choices?.[0]?.message?.images ?? [];
   const rawUsage = data?.usage;
   const inputTokens = Number(rawUsage?.prompt_tokens) || 0;
   const outputTokens = Number(rawUsage?.completion_tokens) || 0;
@@ -111,28 +112,21 @@ async function generateImage(
     model: IMAGE_MODEL,
   };
 
-  // Extract base64 image from content
-  // Gemini returns images as inline base64 in the content
+  // OpenRouter returns images in .message.images[].image_url.url as data URLs
+  if (images.length > 0) {
+    const imageUrl = images[0]?.image_url?.url;
+    if (imageUrl) {
+      return { image: { name, dataUrl: imageUrl }, usage };
+    }
+  }
+
+  // Fallback: check content for inline base64
   const base64Match = content.match(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/);
   if (base64Match) {
-    return {
-      image: { name, dataUrl: base64Match[0] },
-      usage,
-    };
+    return { image: { name, dataUrl: base64Match[0] }, usage };
   }
 
-  // Sometimes the image is just raw base64 without the data URL prefix
-  // Check if content contains a large base64 block
-  const rawBase64 = content.match(/[A-Za-z0-9+/=]{1000,}/);
-  if (rawBase64) {
-    // Assume PNG
-    return {
-      image: { name, dataUrl: `data:image/png;base64,${rawBase64[0]}` },
-      usage,
-    };
-  }
-
-  console.log(`[🖼️ Canvas] No image found in response for "${name}" (content length: ${content.length})`);
+  console.log(`[🖼️ Canvas] No image found in response for "${name}" (content: ${content.length} chars, images array: ${images.length})`);
   return { image: null, usage };
 }
 
