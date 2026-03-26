@@ -557,9 +557,9 @@
       renderPipeline();
     };
 
-    window.replayPipeline = async (runId, pickStep) => {
-      let fromStep = 0;
-      if (pickStep) {
+    window.replayPipeline = async (runId, pickStep, directFromStep) => {
+      let fromStep = typeof directFromStep === 'number' ? directFromStep : 0;
+      if (pickStep && typeof directFromStep !== 'number') {
         const steps = pipeline.map((a, i) => `${i}: ${a.emoji} ${a.name}`).join('\n');
         const val = prompt(`Replay from which step?\n\n${steps}`, '0');
         if (val === null) return;
@@ -791,7 +791,7 @@
             stepOutputs[data.step] = data.output || 'No output captured';
             el.querySelector('.badge').className = 'badge badge-failed';
             el.querySelector('.badge').textContent = 'failed';
-            el.querySelector('.step-output').innerHTML = `<div style="margin-bottom:0.5rem;color:#ef4444;">${(data.output || 'No output').replace(/</g,'&lt;').replace(/>/g,'&gt;').slice(0, 200)}</div><button onclick="openInspector(${data.step})" style="background:#1e1e2e;color:#ef4444;border:1px solid #2a2a3e;border-radius:6px;padding:4px 12px;font-size:0.75rem;cursor:pointer;">🔍 Inspect Error</button>`;
+            el.querySelector('.step-output').innerHTML = `<div style="margin-bottom:0.5rem;color:#ef4444;">${(data.output || 'No output').replace(/</g,'&lt;').replace(/>/g,'&gt;').slice(0, 200)}</div><div style="display:flex;gap:0.5rem;margin-top:0.5rem;"><button onclick="openInspector(${data.step})" style="background:#1e1e2e;color:#ef4444;border:1px solid #2a2a3e;border-radius:6px;padding:4px 12px;font-size:0.75rem;cursor:pointer;">🔍 Inspect Error</button><button onclick="replayPipeline('${runId}', false, ${data.step})" style="background:#3b82f6;color:white;border:none;border-radius:6px;padding:4px 12px;font-size:0.75rem;font-weight:600;cursor:pointer;">🔁 Replay from here</button></div>`;
           }
         }
 
