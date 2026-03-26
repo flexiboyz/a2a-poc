@@ -35,7 +35,7 @@ const __dirname = dirname(__filename);
 
 // ── Config ────────────────────────────────────────────────────────────────
 
-const IMAGE_MODEL = process.env["MODEL_CANVAS"] ?? "google/gemini-2.5-flash-image";
+const IMAGE_MODEL = process.env["MODEL_CANVAS"] ?? "google/gemini-3.1-flash-image-preview";
 
 const CANVAS_SYSTEM_PROMPT = `You are a UI/UX mockup generator. Generate a high-fidelity UI mockup image.
 
