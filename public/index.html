@@ -385,6 +385,9 @@
 
       <!-- Controls -->
       <div class="controls">
+        <select id="project-select" style="padding:0.6rem 1rem;background:#1e1e2e;color:#e0e0e0;border:1px solid #2a2a3e;border-radius:8px;font-size:0.9rem;min-width:160px;">
+          <option value="">No project</option>
+        </select>
         <input id="input" class="input-field" placeholder="Enter a topic for the pipeline..." value="Should we use A2A for multi-agent orchestration?">
         <button id="btn-run" class="btn btn-run" disabled>▶ Run</button>
         <button id="btn-random" class="btn btn-run" style="background: linear-gradient(135deg, #f59e0b, #ef4444);">🎲 Random</button>
@@ -409,9 +412,33 @@
 
     let pipeline = []; // { name, emoji }[]
     let agents = [];
+    let projects = [];
     let stepOutputs = {}; // { stepIndex: outputString }
     let runCost = { totalTokens: 0, totalCost: 0, steps: 0 };
     const basePath = window.location.pathname.replace(/\/$/, '');
+
+    // Load projects
+    fetch(`${basePath}/api/projects`).then(r => r.json()).then(data => {
+      projects = data;
+      const sel = document.getElementById('project-select');
+      data.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = JSON.stringify(p);
+        opt.textContent = `${p.name}${p.workspace_path ? '' : ' (no workspace)'}`;
+        sel.appendChild(opt);
+      });
+    });
+
+    function getFullInput() {
+      const raw = inputEl.value;
+      const sel = document.getElementById('project-select');
+      const projectJson = sel?.value;
+      if (!projectJson) return raw;
+      try {
+        const p = JSON.parse(projectJson);
+        return `## Target Project\nname: ${p.name}\ngithub_repo: ${p.github_repo}\nworkspace_path: ${p.workspace_path || 'N/A'}\nbranch: ${p.active_branch}\n\n## Task\n${raw}`;
+      } catch { return raw; }
+    }
 
     // ── YAML Inspector ───────────────────────────────────────────
     function highlightYaml(text) {
@@ -624,7 +651,7 @@
       const rRes = await fetch(`${basePath}/api/random-run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: inputEl.value }),
+        body: JSON.stringify({ input: getFullInput() }),
       });
       const { runId, agents: pickedAgents } = await rRes.json();
 
@@ -695,7 +722,7 @@
       const rRes = await fetch(`${basePath}/api/pipelines/${pipelineId}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: inputEl.value }),
+        body: JSON.stringify({ input: getFullInput() }),
       });
       const { runId } = await rRes.json();
 
