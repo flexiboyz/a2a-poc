@@ -167,3 +167,46 @@ export const AssemblerCodeGenJsonSchema = {
   required: ["summary", "branch", "files", "commits"],
   additionalProperties: false,
 };
+
+/**
+ * Sentinel review schema — LLM produces a review verdict with per-file comments.
+ */
+export const SentinelReviewJsonSchema = {
+  type: "object",
+  properties: {
+    verdict: { type: "string", enum: ["approved", "request_changes"] },
+    summary: { type: "string", description: "Overall review summary" },
+    files: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          status: { type: "string", enum: ["accepted", "rejected", "needs_changes"] },
+          comment: { type: "string", description: "Review comment explaining the status" },
+        },
+        required: ["path", "status", "comment"],
+        additionalProperties: false,
+      },
+    },
+    security_flags: {
+      type: "array",
+      items: { type: "string" },
+      description: "Specific security concerns found",
+    },
+    acceptance_criteria_check: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          criteria: { type: "string" },
+          met: { type: "boolean" },
+        },
+        required: ["criteria", "met"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["verdict", "summary", "files", "security_flags", "acceptance_criteria_check"],
+  additionalProperties: false,
+};
