@@ -26,6 +26,7 @@ import { createSentinelRouter, getLastSentinelUsage } from "./agents/sentinel";
 import { createBastionRouter, getLastBastionUsage } from "./agents/bastion";
 import { createPrismRouter, getLastPrismUsage } from "./agents/prism";
 import { createMoodboardRouter, getLastMoodboardUsage } from "./agents/moodboard";
+import { createCanvasRouter, getLastCanvasUsage } from "./agents/canvas";
 import { createWorkflowMasterRouter, getLastWorkflowMasterUsage } from "./agents/workflowmaster";
 import { emptyUsage, type TokenUsage } from "./gateway";
 import { A2AClient } from "@a2a-js/sdk/client";
@@ -83,6 +84,7 @@ const AGENTS: AgentDef[] = [
   { name: "Bastion", emoji: "🏰", skill: "security", description: "Security audit — deep OWASP review, auth, injection, data leaks" },
   { name: "Prism", emoji: "🌈", skill: "design", description: "UX design — mockups, component specs, user flows, image-gen prompts" },
   { name: "Moodboard", emoji: "🎨", skill: "moodboard", description: "Visual inspiration — upload images, get structured moodboard", requiresInput: true },
+  { name: "Canvas", emoji: "🖼️", skill: "image-gen", description: "Image generation — creates UI mockup images from design descriptions" },
 ];
 
 // ── Single Express App ─────────────────────────────────────────────────────
@@ -92,7 +94,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(resolve(__dirname, "../public")));
 
 // Mount toy agents on their sub-paths (skip real ACP agents — they have their own routers)
-const REAL_AGENTS = new Set(["WorkflowMaster", "Cipher", "Assembler", "Sentinel", "Bastion", "Prism", "Moodboard"]);
+const REAL_AGENTS = new Set(["WorkflowMaster", "Cipher", "Assembler", "Sentinel", "Bastion", "Prism", "Moodboard", "Canvas"]);
 for (const def of AGENTS) {
   if (REAL_AGENTS.has(def.name)) continue; // mounted separately below
   const slug = def.name.toLowerCase();
@@ -124,6 +126,10 @@ console.log(`[🤖] Mounted 🌈 Prism → /prism/ (UX Design)`);
 // Mount Moodboard (visual inspiration — pauses for image upload)
 app.use("/moodboard", createMoodboardRouter(BASE_URL));
 console.log(`[🤖] Mounted 🎨 Moodboard → /moodboard/ (Visual Inspiration)`);
+
+// Mount Canvas (image generation from design descriptions)
+app.use("/canvas", createCanvasRouter(BASE_URL));
+console.log(`[🤖] Mounted 🖼️ Canvas → /canvas/ (Image Generation)`);
 
 // Mount WorkflowMaster (real ACP Claude agent)
 app.use("/workflowmaster", createWorkflowMasterRouter(BASE_URL));
