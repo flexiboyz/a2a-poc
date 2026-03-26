@@ -563,7 +563,7 @@
       });
     }
 
-    // Image upload handling for Moodboard agent
+    // Image upload handling for Moodboard agent — resize to max 800px
     window._uploadedImages = [];
     window.handleImageUpload = (input) => {
       const files = Array.from(input.files).slice(0, 4);
@@ -574,10 +574,26 @@
       files.forEach((file, i) => {
         const reader = new FileReader();
         reader.onload = (e) => {
-          window._uploadedImages.push(e.target.result);
-          if (preview) {
-            preview.innerHTML += `<div style="position:relative;"><img src="${e.target.result}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid #333;"><span style="position:absolute;top:2px;right:2px;background:#0a0a0f;color:#888;font-size:0.65rem;padding:1px 4px;border-radius:3px;">${i+1}</span></div>`;
-          }
+          const img = new Image();
+          img.onload = () => {
+            // Resize to max 800px on longest side
+            const MAX = 800;
+            let w = img.width, h = img.height;
+            if (w > MAX || h > MAX) {
+              if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+              else { w = Math.round(w * MAX / h); h = MAX; }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+            const resized = canvas.toDataURL('image/jpeg', 0.85);
+            window._uploadedImages.push(resized);
+            if (preview) {
+              const kb = Math.round(resized.length * 3/4 / 1024);
+              preview.innerHTML += `<div style="position:relative;"><img src="${resized}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid #333;"><span style="position:absolute;top:2px;right:2px;background:#0a0a0f;color:#888;font-size:0.65rem;padding:1px 4px;border-radius:3px;">${i+1} (${kb}kb)</span></div>`;
+            }
+          };
+          img.src = e.target.result;
         };
         reader.readAsDataURL(file);
       });
