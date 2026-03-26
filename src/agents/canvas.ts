@@ -94,7 +94,7 @@ async function generateImage(
     body: JSON.stringify({
       model: IMAGE_MODEL,
       messages: [
-        { role: "user", content: `${CANVAS_SYSTEM_PROMPT}\n\n## Mockup Description\n\n${prompt}` },
+        { role: "user", content: `${CANVAS_SYSTEM_PROMPT}\n\n## Mockup Description\n\nGenerate a UI SCREENSHOT mockup of a web/mobile application with the following design:\n\n${prompt}\n\nREMINDER: This must be a UI APPLICATION mockup (buttons, navigation, content sections, cards, etc.), NOT a poster, fashion item, or physical product.` },
       ],
       max_tokens: 8192,
     }),
@@ -174,26 +174,33 @@ class CanvasExecutor implements AgentExecutor {
         }
       }
 
+      // Separate Prism and Moodboard prompts — Prism takes priority
+      const prismPrompts: Array<{ name: string; prompt: string }> = [];
+      const moodboardPrompts: Array<{ name: string; prompt: string }> = [];
+
       for (const candidate of jsonCandidates) {
         try {
           const parsed = JSON.parse(candidate);
-          // Extract from Prism output
+          // Extract from Prism output (PRIORITY)
           if (parsed?.output?.mockup_descriptions) {
             for (const mockup of parsed.output.mockup_descriptions) {
               if (mockup.prompt) {
-                mockupPrompts.push({ name: mockup.name ?? "mockup", prompt: mockup.prompt });
+                prismPrompts.push({ name: mockup.name ?? "mockup", prompt: mockup.prompt });
               }
             }
           }
-          // Extract from Moodboard output
+          // Extract from Moodboard output (fallback)
           if (parsed?.output?.synthesized_moodboard?.design_prompt) {
-            mockupPrompts.push({
+            moodboardPrompts.push({
               name: "moodboard-design",
               prompt: parsed.output.synthesized_moodboard.design_prompt,
             });
           }
         } catch { /* not valid JSON */ }
       }
+
+      // Prism prompts first, then Moodboard
+      mockupPrompts.push(...prismPrompts, ...moodboardPrompts);
 
       // Strategy 2: Regex for prompt fields (handles YAML-wrapped or escaped JSON)
       if (mockupPrompts.length === 0) {
