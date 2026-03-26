@@ -156,9 +156,13 @@ async function executeGitOperations(
     }
   }
 
-  // 4. Stage only the files we touched (not unrelated changes in the repo)
+  // 4. Stage only the files we touched (skip gitignored files)
   for (const file of codeGen.files) {
-    exec(`git add "${file.path}"`);
+    try {
+      exec(`git add "${file.path}"`);
+    } catch {
+      console.log(`[⚙️ Assembler] ⚠️ Skipping gitignored file: ${file.path}`);
+    }
   }
 
   // 5. Commit with all commit messages joined

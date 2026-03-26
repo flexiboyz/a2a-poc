@@ -43,5 +43,6 @@
 
     "moduleResolution": "bundler",
     "esModuleInterop": true,
-  }
+  },
+  "exclude": ["node_modules", "dist", "nextjs-app", "a2a-playground"]
 }
