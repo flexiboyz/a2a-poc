@@ -25,6 +25,7 @@ import { createAssemblerRouter, getLastAssemblerUsage } from "./agents/assembler
 import { createSentinelRouter, getLastSentinelUsage } from "./agents/sentinel";
 import { createBastionRouter, getLastBastionUsage } from "./agents/bastion";
 import { createPrismRouter, getLastPrismUsage } from "./agents/prism";
+import { createMoodboardRouter, getLastMoodboardUsage } from "./agents/moodboard";
 import { createWorkflowMasterRouter, getLastWorkflowMasterUsage } from "./agents/workflowmaster";
 import { emptyUsage, type TokenUsage } from "./gateway";
 import { A2AClient } from "@a2a-js/sdk/client";
@@ -81,6 +82,7 @@ const AGENTS: AgentDef[] = [
   { name: "Sentinel", emoji: "🛡️", skill: "review", description: "Code review — reviews PRs, approves/merges or requests changes" },
   { name: "Bastion", emoji: "🏰", skill: "security", description: "Security audit — deep OWASP review, auth, injection, data leaks" },
   { name: "Prism", emoji: "🌈", skill: "design", description: "UX design — mockups, component specs, user flows, image-gen prompts" },
+  { name: "Moodboard", emoji: "🎨", skill: "moodboard", description: "Visual inspiration — upload images, get structured moodboard", requiresInput: true },
   // Toy agents for testing
   { name: "Spark", emoji: "✨", skill: "brainstorm", description: "Creative visionary — generates wild ideas" },
   { name: "Flint", emoji: "🪨", skill: "validate", description: "Pragmatic builder — validates feasibility", requiresInput: true },
@@ -101,7 +103,7 @@ app.use(express.json());
 app.use(express.static(resolve(__dirname, "../public")));
 
 // Mount toy agents on their sub-paths (skip real ACP agents — they have their own routers)
-const REAL_AGENTS = new Set(["WorkflowMaster", "Cipher", "Assembler", "Sentinel", "Bastion", "Prism"]);
+const REAL_AGENTS = new Set(["WorkflowMaster", "Cipher", "Assembler", "Sentinel", "Bastion", "Prism", "Moodboard"]);
 for (const def of AGENTS) {
   if (REAL_AGENTS.has(def.name)) continue; // mounted separately below
   const slug = def.name.toLowerCase();
@@ -129,6 +131,10 @@ console.log(`[🤖] Mounted 🏰 Bastion → /bastion/ (Security Audit)`);
 // Mount Prism (UX designer — mockups + image-gen prompts)
 app.use("/prism", createPrismRouter(BASE_URL));
 console.log(`[🤖] Mounted 🌈 Prism → /prism/ (UX Design)`);
+
+// Mount Moodboard (visual inspiration — pauses for image upload)
+app.use("/moodboard", createMoodboardRouter(BASE_URL));
+console.log(`[🤖] Mounted 🎨 Moodboard → /moodboard/ (Visual Inspiration)`);
 
 // Mount WorkflowMaster (real ACP Claude agent)
 app.use("/workflowmaster", createWorkflowMasterRouter(BASE_URL));

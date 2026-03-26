@@ -533,15 +533,42 @@
       });
     }
 
+    // Image upload handling for Moodboard agent
+    window._uploadedImages = [];
+    window.handleImageUpload = (input) => {
+      const files = Array.from(input.files).slice(0, 4);
+      const preview = document.getElementById('image-preview');
+      window._uploadedImages = [];
+      if (preview) preview.innerHTML = '';
+      
+      files.forEach((file, i) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          window._uploadedImages.push(e.target.result);
+          if (preview) {
+            preview.innerHTML += `<div style="position:relative;"><img src="${e.target.result}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid #333;"><span style="position:absolute;top:2px;right:2px;background:#0a0a0f;color:#888;font-size:0.65rem;padding:1px 4px;border-radius:3px;">${i+1}</span></div>`;
+          }
+        };
+        reader.readAsDataURL(file);
+      });
+    };
+
     window.sendReply = async (runId, directAction) => {
       let reply;
       if (directAction) {
         reply = directAction;
       } else {
         const input = document.getElementById('user-reply');
-        if (!input || !input.value.trim()) return;
-        reply = input.value.trim();
-        input.disabled = true;
+        const textVal = input?.value?.trim() || '';
+        // Append uploaded images as data URLs
+        if (window._uploadedImages && window._uploadedImages.length > 0) {
+          reply = (textVal || 'images attached') + '\n' + window._uploadedImages.join('\n');
+          window._uploadedImages = [];
+        } else {
+          if (!textVal) return;
+          reply = textVal;
+        }
+        if (input) input.disabled = true;
       }
       // Disable all buttons in the escalation/input prompt
       document.querySelectorAll('.input-prompt button').forEach(b => b.disabled = true);
@@ -697,11 +724,21 @@
             el.classList.remove('running');
             el.querySelector('.badge').className = 'badge badge-input-required';
             el.querySelector('.badge').textContent = 'input required';
+            const isImageRequest = data.question.toLowerCase().includes('image') || data.question.toLowerCase().includes('upload') || data.question.toLowerCase().includes('moodboard');
             el.querySelector('.step-output').innerHTML = data.question +
               `<div class="input-prompt">
                 <p>⏸️ Agent is waiting for your input:</p>
+                ${isImageRequest ? `
+                <div style="margin-bottom:0.5rem;">
+                  <label style="display:inline-flex;align-items:center;gap:0.5rem;padding:0.5rem 1rem;background:#1e1e2e;border:1px dashed #3b82f6;border-radius:8px;cursor:pointer;font-size:0.85rem;color:#3b82f6;">
+                    📎 Upload images
+                    <input type="file" id="image-upload" accept="image/*" multiple style="display:none" onchange="handleImageUpload(this)">
+                  </label>
+                  <div id="image-preview" style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;"></div>
+                </div>
+                ` : ''}
                 <div class="input-row">
-                  <input id="user-reply" placeholder="Type your reply..." autofocus>
+                  <input id="user-reply" placeholder="${isImageRequest ? 'Upload images then click Send, or type skip...' : 'Type your reply...'}" autofocus>
                   <button onclick="sendReply('${runId}')">Send →</button>
                 </div>
               </div>`;
