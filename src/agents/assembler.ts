@@ -28,7 +28,7 @@ import {
 
 import { invokeGateway as invokeGatewayShared, accumulateUsage, emptyUsage, type TokenUsage } from "../gateway.js";
 import { AssemblerCodeGenJsonSchema } from "../schemas/json-schemas.js";
-import YAML from "js-yaml";
+
 
 // ── Config ────────────────────────────────────────────────────────────────
 
@@ -156,8 +156,10 @@ async function executeGitOperations(
     }
   }
 
-  // 4. Stage all changes
-  exec("git add -A");
+  // 4. Stage only the files we touched (not unrelated changes in the repo)
+  for (const file of codeGen.files) {
+    exec(`git add "${file.path}"`);
+  }
 
   // 5. Commit with all commit messages joined
   const commitMsg = codeGen.commits.join("\n\n");
@@ -365,11 +367,7 @@ class AssemblerExecutor implements AgentExecutor {
         },
       };
 
-      const yamlOutput = YAML.dump(assemblerOutput, {
-        lineWidth: -1,
-        noRefs: true,
-        quotingType: '"',
-      });
+      const jsonOutput = JSON.stringify(assemblerOutput, null, 2);
 
       // Publish YAML output as A2A artifact
       const artifactEvent: TaskArtifactUpdateEvent = {
@@ -380,12 +378,12 @@ class AssemblerExecutor implements AgentExecutor {
         artifact: {
           artifactId: uuidv4(),
           name: "assembler-output",
-          description: "Assembler implementation output (YAML)",
+          description: "Assembler implementation output (JSON)",
           parts: [
             {
               kind: "text",
-              text: yamlOutput,
-              metadata: { mimeType: "application/x-yaml" },
+              text: jsonOutput,
+              metadata: { mimeType: "application/json" },
             },
           ],
         },
@@ -396,7 +394,7 @@ class AssemblerExecutor implements AgentExecutor {
         kind: "message",
         messageId: uuidv4(),
         role: "agent",
-        parts: [{ kind: "text", text: yamlOutput }],
+        parts: [{ kind: "text", text: jsonOutput }],
         contextId: ctx.contextId,
       };
 
