@@ -133,7 +133,6 @@ async function analyzeImagesWithVision(
       messages: [{ role: "user", content }],
       max_tokens: 4096,
       temperature: 0.3,
-      response_format: { type: "json_object" },
     }),
   });
 
@@ -145,6 +144,10 @@ async function analyzeImagesWithVision(
   const data = await res.json() as any;
   const output = data?.choices?.[0]?.message?.content ?? "";
   const rawUsage = data?.usage;
+  
+  if (!output) {
+    console.error(`[🎨 Moodboard] Vision API returned empty output. Full response:`, JSON.stringify(data).slice(0, 500));
+  }
   const inputTokens = Number(rawUsage?.prompt_tokens) || 0;
   const outputTokens = Number(rawUsage?.completion_tokens) || 0;
 
