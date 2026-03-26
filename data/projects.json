@@ -1,0 +1,51 @@
+[
+  {
+    "id": "adb3d023-6596-402d-bafb-171ad47a700a",
+    "name": "RockerOS",
+    "github_repo": "flexiboyz/rocker-os-workflow",
+    "workspace_path": "/Users/rockerclaw/.openclaw/workspace/rocker-os-workflow",
+    "active_branch": "main"
+  },
+  {
+    "id": "a97d6617-2e16-432a-b0dd-7984277eaea0",
+    "name": "NEARD",
+    "github_repo": "SuperstrongBE/neard",
+    "workspace_path": "/Users/rockerclaw/.openclaw/workspace/neard",
+    "active_branch": "dev"
+  },
+  {
+    "id": "84bc278e-4dd3-43d5-8ce8-f75b86c23de5",
+    "name": "DLTT",
+    "github_repo": "SuperstrongBE/DLTT",
+    "workspace_path": "/Users/rockerclaw/.openclaw/workspace/DLTT",
+    "active_branch": "main"
+  },
+  {
+    "id": "709ceecb-e6e0-4ec0-9062-b00ca983bec8",
+    "name": "Moufle",
+    "github_repo": "flexiboyz/moufle",
+    "workspace_path": "/Users/rockerclaw/.openclaw/workspace/moufle",
+    "active_branch": "main"
+  },
+  {
+    "id": "58f295ae-6285-458d-9e3a-05b67903528d",
+    "name": "A2A Pipeline",
+    "github_repo": "flexiboyz/a2a-poc",
+    "workspace_path": "/Users/rockerclaw/.openclaw/workspace/a2a-poc",
+    "active_branch": "main"
+  },
+  {
+    "id": "88bb6b48-1b55-40ce-89fa-8aa5dff61ef4",
+    "name": "Purplup",
+    "github_repo": "SuperstrongBE/purplup.io",
+    "workspace_path": null,
+    "active_branch": "main"
+  },
+  {
+    "id": "c434b9be-4c1e-463b-a90a-a1b51a2f48d9",
+    "name": "DatingApp",
+    "github_repo": "flexiboyz/DatingApp",
+    "workspace_path": null,
+    "active_branch": "main"
+  }
+]

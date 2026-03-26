@@ -210,3 +210,95 @@ export const SentinelReviewJsonSchema = {
   required: ["verdict", "summary", "files", "security_flags", "acceptance_criteria_check"],
   additionalProperties: false,
 };
+
+/**
+ * Bastion security review schema.
+ */
+export const BastionReviewJsonSchema = {
+  type: "object",
+  properties: {
+    summary: { type: "string", description: "Overall security assessment summary" },
+    services_checked: {
+      type: "array",
+      items: { type: "string" },
+      description: "List of services/components audited",
+    },
+    security_review: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          item: { type: "string", description: "What was checked or found" },
+          risk: { type: "string", enum: ["none", "low", "medium", "high", "critical"] },
+          recommendation: { type: "string", description: "Specific actionable fix" },
+        },
+        required: ["item", "risk", "recommendation"],
+        additionalProperties: false,
+      },
+    },
+    actions_taken: {
+      type: "array",
+      items: { type: "string" },
+      description: "Actions performed during the audit",
+    },
+  },
+  required: ["summary", "services_checked", "security_review", "actions_taken"],
+  additionalProperties: false,
+};
+
+/**
+ * Prism UX design schema — includes mockup descriptions for image generation.
+ */
+export const PrismDesignJsonSchema = {
+  type: "object",
+  properties: {
+    summary: { type: "string", description: "Design approach summary" },
+    components: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          description: { type: "string" },
+          props: { type: "array", items: { type: "string" } },
+          visual_spec: { type: "string", description: "Detailed visual specification (colors, sizes, spacing)" },
+          states: { type: "array", items: { type: "string" }, description: "Interactive states (hover, active, disabled, loading, error)" },
+        },
+        required: ["name", "description", "props"],
+        additionalProperties: false,
+      },
+    },
+    user_flows: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          steps: { type: "array", items: { type: "string" }, minItems: 1 },
+        },
+        required: ["name", "steps"],
+        additionalProperties: false,
+      },
+    },
+    mockup_descriptions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Screen/view name" },
+          viewport: { type: "string", enum: ["mobile", "desktop", "both"], description: "Target viewport" },
+          prompt: { type: "string", description: "Detailed image-gen prompt describing exactly what the screen looks like" },
+        },
+        required: ["name", "viewport", "prompt"],
+        additionalProperties: false,
+      },
+      description: "Image-generation-ready mockup descriptions",
+    },
+    accessibility_notes: {
+      type: "array",
+      items: { type: "string" },
+    },
+  },
+  required: ["summary", "components", "user_flows", "mockup_descriptions", "accessibility_notes"],
+  additionalProperties: false,
+};
