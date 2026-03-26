@@ -1,3 +1,8 @@
 node_modules/
 dist/
 .env
+
+# Next.js
+nextjs-app/.next/
+nextjs-app/node_modules/
+nextjs-app/out/
