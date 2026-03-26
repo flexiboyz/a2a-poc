@@ -655,43 +655,6 @@
       setupSSE(evtSource, newRunId);
     };
 
-    // ── Random Pipeline ──────────────────────────────────────────
-    document.getElementById('btn-random').addEventListener('click', async () => {
-      outputEl.innerHTML = '<p class="output-empty"><span class="spinner"></span> Launching random pipeline...</p>';
-      const rRes = await fetch(`${basePath}/api/random-run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: getFullInput() }),
-      });
-      const { runId, agents: pickedAgents } = await rRes.json();
-
-      // Update pipeline zone to show what was picked
-      pipeline = pickedAgents.map(name => {
-        const a = agents.find(x => x.name === name);
-        return { name, emoji: a?.emoji || '❓' };
-      });
-      renderPipeline();
-
-      // Show pending steps
-      outputEl.innerHTML = '';
-      pickedAgents.forEach((name, i) => {
-        const a = agents.find(x => x.name === name);
-        outputEl.innerHTML += `
-          <div class="step-result" id="step-${i}">
-            <div class="step-header">
-              <span>${a?.emoji || '❓'}</span>
-              <strong>${name}</strong>
-              <span class="badge badge-pending">pending</span>
-            </div>
-            <div class="step-output" style="color: #444;">Waiting...</div>
-          </div>`;
-      });
-
-      // SSE
-      const evtSource = new EventSource(`${basePath}/api/runs/${runId}/stream`);
-      setupSSE(evtSource, runId);
-    });
-
     btnClear.addEventListener('click', () => {
       pipeline = [];
       stepOutputs = {};
