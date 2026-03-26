@@ -37,19 +37,23 @@ const __dirname = dirname(__filename);
 
 const IMAGE_MODEL = process.env["MODEL_CANVAS"] ?? "google/gemini-2.5-flash-image";
 
-const CANVAS_SYSTEM_PROMPT = `You are a UI/UX mockup generator. Generate a high-fidelity UI mockup image based on the description provided.
+const CANVAS_SYSTEM_PROMPT = `You are a UI/UX mockup generator. Generate a high-fidelity UI mockup image.
+
+CRITICAL: Follow the description EXACTLY. Do not invent your own design. The description below specifies:
+- The exact type of application/page to show
+- Color palette and theme
+- Typography and layout
+- Specific UI elements and components
 
 RULES:
-- Generate EXACTLY ONE image per request
-- The image should be a realistic UI mockup, not a wireframe
-- Follow the colors, typography, spacing, and layout described precisely
-- Use dark theme (#0a0a0a background) unless specified otherwise
-- Include realistic content (real text, not lorem ipsum)
-- Make it look like a real app screenshot
-- Include proper padding, margins, and visual hierarchy
-- Use modern UI patterns (rounded corners, subtle shadows, clean typography)
+- Generate EXACTLY ONE image
+- It must be a realistic UI mockup screenshot, not a wireframe or illustration
+- Follow ALL colors, fonts, spacing, and layout from the description — do NOT substitute with generic designs
+- Include realistic content text (not lorem ipsum)
+- Make it look like an actual app screenshot
+- The mockup must match the described application type (music app, dashboard, landing page, etc.)
 
-Generate the image now.`;
+IMPORTANT: Read the description carefully. If it says "audio streaming platform", show a music/audio app. If it says "dark warm palette", use those exact colors. Do NOT default to generic e-commerce or unrelated UIs.`;
 
 // ── Token usage tracking ────────────────────────────────────────────────
 
@@ -148,29 +152,68 @@ class CanvasExecutor implements AgentExecutor {
     console.log(`[🖼️ Canvas] Received: "${text.slice(0, 120)}${text.length > 120 ? "..." : ""}"`);
 
     try {
-      // Extract mockup descriptions from Prism output or direct prompts
+      // Extract mockup descriptions from previous agent outputs in the pipeline context
       const mockupPrompts: Array<{ name: string; prompt: string }> = [];
 
-      // Try to find Prism's mockup_descriptions in the context
-      const mockupMatches = text.matchAll(/"name"\s*:\s*"([^"]+)"[^}]*"prompt"\s*:\s*"([^"]+)"/g);
-      for (const match of mockupMatches) {
-        if (match[1] && match[2]) {
-          mockupPrompts.push({ name: match[1], prompt: match[2] });
-        }
+      // Strategy 1: Find JSON blocks in the context and extract mockup_descriptions
+      const jsonBlocks = text.match(/\{[\s\S]*?"agent"[\s\S]*?\}/g) ?? [];
+      for (const block of jsonBlocks) {
+        try {
+          // Find the outermost JSON object containing this block
+          const startIdx = text.indexOf(block);
+          let depth = 0;
+          let endIdx = startIdx;
+          for (let i = startIdx; i < text.length; i++) {
+            if (text[i] === "{") depth++;
+            if (text[i] === "}") depth--;
+            if (depth === 0) { endIdx = i + 1; break; }
+          }
+          const fullJson = text.slice(startIdx, endIdx);
+          const parsed = JSON.parse(fullJson);
+          
+          // Extract from Prism output
+          if (parsed?.output?.mockup_descriptions) {
+            for (const mockup of parsed.output.mockup_descriptions) {
+              if (mockup.prompt) {
+                mockupPrompts.push({ name: mockup.name ?? "mockup", prompt: mockup.prompt });
+              }
+            }
+          }
+          // Extract from Moodboard output
+          if (parsed?.output?.synthesized_moodboard?.design_prompt) {
+            mockupPrompts.push({ 
+              name: "moodboard-design", 
+              prompt: parsed.output.synthesized_moodboard.design_prompt 
+            });
+          }
+        } catch { /* not valid JSON, skip */ }
       }
 
-      // If no structured mockups found, try to find design_prompt from Moodboard
+      // Strategy 2: Try regex for design_prompt (simpler strings)
       if (mockupPrompts.length === 0) {
-        const designPromptMatch = text.match(/"design_prompt"\s*:\s*"([^"]+)"/);
+        const designPromptMatch = text.match(/design_prompt[:\s]*["']([^"']{20,})["']/);
         if (designPromptMatch?.[1]) {
-          mockupPrompts.push({ name: "moodboard-design", prompt: designPromptMatch[1] });
+          mockupPrompts.push({ name: "design", prompt: designPromptMatch[1] });
         }
       }
 
-      // Fallback: use the entire context as a single prompt
+      // Strategy 3: Look for Prism's summary as a prompt
       if (mockupPrompts.length === 0) {
-        mockupPrompts.push({ name: "mockup", prompt: text.slice(0, 4000) });
+        const summaryMatch = text.match(/summary[:\s]*["']([^"']{50,})["']/);
+        if (summaryMatch?.[1]) {
+          mockupPrompts.push({ name: "from-summary", prompt: summaryMatch[1] });
+        }
       }
+
+      // Fallback: use the task topic (not the full context — that confuses the model)
+      if (mockupPrompts.length === 0) {
+        // Extract just the topic/task section
+        const topicMatch = text.match(/## (?:Topic|Task)\s*\n([\s\S]*?)(?=\n##|$)/);
+        const prompt = topicMatch?.[1]?.trim() ?? text.slice(0, 2000);
+        mockupPrompts.push({ name: "mockup", prompt });
+      }
+
+      console.log(`[🖼️ Canvas] Extracted ${mockupPrompts.length} prompt(s): ${mockupPrompts.map(p => p.name).join(", ")}`);
 
       // Limit to 4 images max
       const prompts = mockupPrompts.slice(0, 4);
