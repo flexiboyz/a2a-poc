@@ -837,10 +837,14 @@
             try {
               const parsed = JSON.parse(data.output);
               if (parsed?.output?.images && Array.isArray(parsed.output.images)) {
-                imagesHtml = '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.5rem 0;">' +
-                  parsed.output.images.filter(img => img.data_url).map((img, i) =>
-                    `<div style="position:relative;"><img src="${img.data_url}" style="max-width:400px;max-height:300px;border-radius:8px;border:1px solid #2a2a3e;cursor:pointer;" onclick="window.open(this.src)" title="${img.name || 'mockup-' + i}"><div style="position:absolute;bottom:4px;left:4px;background:rgba(0,0,0,0.7);color:#fff;font-size:0.65rem;padding:2px 6px;border-radius:4px;">${img.name || 'mockup-' + i}</div></div>`
-                  ).join('') + '</div>';
+                const imgItems = parsed.output.images.filter(img => img.url || img.data_url);
+                if (imgItems.length > 0) {
+                  imagesHtml = '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.5rem 0;">' +
+                    imgItems.map((img, i) => {
+                      const src = img.url ? (basePath + img.url) : img.data_url;
+                      return `<div style="position:relative;"><img src="${src}" style="max-width:500px;max-height:400px;border-radius:8px;border:1px solid #2a2a3e;cursor:pointer;" onclick="window.open('${src}')" title="${img.name || 'mockup-' + i}"><div style="position:absolute;bottom:4px;left:4px;background:rgba(0,0,0,0.7);color:#fff;font-size:0.65rem;padding:2px 6px;border-radius:4px;">${img.name || 'mockup-' + i}${img.size_kb ? ' · ' + img.size_kb + 'kb' : ''}</div></div>`;
+                    }).join('') + '</div>';
+                }
               }
             } catch {}
             el.querySelector('.step-output').innerHTML = `${imagesHtml}<div style="margin-bottom:0.5rem;">${imagesHtml ? '' : preview.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div><div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;"><button onclick="openInspector(${data.step})" style="background:#1e1e2e;color:#7c3aed;border:1px solid #2a2a3e;border-radius:6px;padding:4px 12px;font-size:0.75rem;cursor:pointer;">🔍 Inspect Output</button>${costHtml}</div>`;

@@ -26,6 +26,12 @@ import {
 } from "@a2a-js/sdk/server/express";
 
 import { emptyUsage, accumulateUsage, type TokenUsage } from "../gateway.js";
+import { writeFileSync } from "fs";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // ── Config ────────────────────────────────────────────────────────────────
 
@@ -195,6 +201,26 @@ class CanvasExecutor implements AgentExecutor {
         throw new Error("No images were generated — the model may not support image generation or the prompts were rejected");
       }
 
+      // Save images to disk and create URLs
+      const savedImages: Array<{ name: string; url: string; size_kb: number }> = [];
+      const generatedDir = resolve(__dirname, "../../public/generated");
+
+      for (const img of images) {
+        const filename = `${Date.now()}-${img.name.replace(/[^a-z0-9-]/gi, "_")}.png`;
+        const filepath = resolve(generatedDir, filename);
+        
+        // Extract base64 data and write to file
+        const base64Data = img.dataUrl.replace(/^data:image\/\w+;base64,/, "");
+        writeFileSync(filepath, Buffer.from(base64Data, "base64"));
+        
+        savedImages.push({
+          name: img.name,
+          url: `/generated/${filename}`,
+          size_kb: Math.round(base64Data.length * 3 / 4 / 1024),
+        });
+        console.log(`[🖼️ Canvas] 💾 Saved: ${filename} (${savedImages[savedImages.length - 1]!.size_kb}kb)`);
+      }
+
       const canvasOutput = {
         agent: "Canvas",
         task_seq: 0,
@@ -205,31 +231,14 @@ class CanvasExecutor implements AgentExecutor {
         pipeline_suggestion: null,
         output: {
           summary: `Generated ${images.length} mockup image(s)`,
-          images: images.map((img) => ({
-            name: img.name,
-            data_url: img.dataUrl,
-          })),
+          images: savedImages,
           prompts_used: prompts.map((p) => p.name),
         },
       };
 
-      // For the artifact, include a lighter version (just metadata, not full base64)
-      const artifactOutput = {
-        ...canvasOutput,
-        output: {
-          ...canvasOutput.output,
-          images: images.map((img) => ({
-            name: img.name,
-            size_kb: Math.round(img.dataUrl.length / 1024),
-            has_image: true,
-          })),
-        },
-      };
-
       const jsonOutput = JSON.stringify(canvasOutput, null, 2);
-      const artifactJson = JSON.stringify(artifactOutput, null, 2);
 
-      // Publish artifact (metadata only — images are in the message)
+      // Publish artifact
       const artifactEvent: TaskArtifactUpdateEvent = {
         kind: "artifact-update",
         taskId: ctx.taskId,
@@ -239,12 +248,10 @@ class CanvasExecutor implements AgentExecutor {
           artifactId: uuidv4(),
           name: "canvas-output",
           description: `Canvas generated ${images.length} mockup image(s)`,
-          parts: [{ kind: "text", text: artifactJson, metadata: { mimeType: "application/json" } }],
+          parts: [{ kind: "text", text: jsonOutput, metadata: { mimeType: "application/json" } }],
         },
       };
       bus.publish(artifactEvent);
-
-      // Message includes full base64 images
       const response: Message = {
         kind: "message",
         messageId: uuidv4(),
