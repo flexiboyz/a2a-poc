@@ -155,22 +155,28 @@ class CanvasExecutor implements AgentExecutor {
       // Extract mockup descriptions from previous agent outputs in the pipeline context
       const mockupPrompts: Array<{ name: string; prompt: string }> = [];
 
-      // Strategy 1: Find JSON blocks in the context and extract mockup_descriptions
-      const jsonBlocks = text.match(/\{[\s\S]*?"agent"[\s\S]*?\}/g) ?? [];
-      for (const block of jsonBlocks) {
-        try {
-          // Find the outermost JSON object containing this block
-          const startIdx = text.indexOf(block);
-          let depth = 0;
-          let endIdx = startIdx;
-          for (let i = startIdx; i < text.length; i++) {
-            if (text[i] === "{") depth++;
-            if (text[i] === "}") depth--;
-            if (depth === 0) { endIdx = i + 1; break; }
+      // Strategy 1: Find ALL JSON objects in the text and try to parse them
+      // The pipeline context may contain multiple agent outputs as JSON strings
+      const jsonCandidates: string[] = [];
+      let braceDepth = 0;
+      let jsonStart = -1;
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] === "{") {
+          if (braceDepth === 0) jsonStart = i;
+          braceDepth++;
+        } else if (text[i] === "}") {
+          braceDepth--;
+          if (braceDepth === 0 && jsonStart !== -1) {
+            const candidate = text.slice(jsonStart, i + 1);
+            if (candidate.length > 100) jsonCandidates.push(candidate);
+            jsonStart = -1;
           }
-          const fullJson = text.slice(startIdx, endIdx);
-          const parsed = JSON.parse(fullJson);
-          
+        }
+      }
+
+      for (const candidate of jsonCandidates) {
+        try {
+          const parsed = JSON.parse(candidate);
           // Extract from Prism output
           if (parsed?.output?.mockup_descriptions) {
             for (const mockup of parsed.output.mockup_descriptions) {
@@ -181,39 +187,49 @@ class CanvasExecutor implements AgentExecutor {
           }
           // Extract from Moodboard output
           if (parsed?.output?.synthesized_moodboard?.design_prompt) {
-            mockupPrompts.push({ 
-              name: "moodboard-design", 
-              prompt: parsed.output.synthesized_moodboard.design_prompt 
+            mockupPrompts.push({
+              name: "moodboard-design",
+              prompt: parsed.output.synthesized_moodboard.design_prompt,
             });
           }
-        } catch { /* not valid JSON, skip */ }
+        } catch { /* not valid JSON */ }
       }
 
-      // Strategy 2: Try regex for design_prompt (simpler strings)
+      // Strategy 2: Regex for prompt fields (handles YAML-wrapped or escaped JSON)
       if (mockupPrompts.length === 0) {
-        const designPromptMatch = text.match(/design_prompt[:\s]*["']([^"']{20,})["']/);
-        if (designPromptMatch?.[1]) {
-          mockupPrompts.push({ name: "design", prompt: designPromptMatch[1] });
+        // Match "prompt": "..." with content longer than 30 chars
+        const promptMatches = text.matchAll(/"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"/g);
+        for (const m of promptMatches) {
+          if (m[1] && m[1].length > 30) {
+            mockupPrompts.push({ name: "extracted-prompt", prompt: m[1].replace(/\\"/g, '"').replace(/\\n/g, "\n") });
+          }
         }
       }
 
-      // Strategy 3: Look for Prism's summary as a prompt
+      // Strategy 3: Look for design_prompt 
       if (mockupPrompts.length === 0) {
-        const summaryMatch = text.match(/summary[:\s]*["']([^"']{50,})["']/);
-        if (summaryMatch?.[1]) {
+        const designMatch = text.match(/design_prompt[:\s]*["']?((?:[^"'\n]){30,})["']?/);
+        if (designMatch?.[1]) {
+          mockupPrompts.push({ name: "design", prompt: designMatch[1] });
+        }
+      }
+
+      // Strategy 4: Extract Prism summary
+      if (mockupPrompts.length === 0) {
+        const summaryMatch = text.match(/"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+        if (summaryMatch?.[1] && summaryMatch[1].length > 40) {
           mockupPrompts.push({ name: "from-summary", prompt: summaryMatch[1] });
         }
       }
 
-      // Fallback: use the task topic (not the full context — that confuses the model)
+      // Fallback: use the task topic only
       if (mockupPrompts.length === 0) {
-        // Extract just the topic/task section
         const topicMatch = text.match(/## (?:Topic|Task)\s*\n([\s\S]*?)(?=\n##|$)/);
         const prompt = topicMatch?.[1]?.trim() ?? text.slice(0, 2000);
-        mockupPrompts.push({ name: "mockup", prompt });
+        mockupPrompts.push({ name: "fallback", prompt });
       }
 
-      console.log(`[🖼️ Canvas] Extracted ${mockupPrompts.length} prompt(s): ${mockupPrompts.map(p => p.name).join(", ")}`);
+      console.log(`[🖼️ Canvas] Extracted ${mockupPrompts.length} prompt(s): ${mockupPrompts.map(p => `${p.name} (${p.prompt.length} chars)`).join(", ")}`);
 
       // Limit to 4 images max
       const prompts = mockupPrompts.slice(0, 4);
