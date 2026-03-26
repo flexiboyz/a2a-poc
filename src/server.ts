@@ -21,6 +21,7 @@ const __dirname = dirname(__filename);
 import { createAgentRouter } from "./agents/create-agent";
 import type { AgentDef } from "./agents/create-agent";
 import { createCipherRouter, getLastCipherUsage } from "./agents/cipher";
+import { createAssemblerRouter, getLastAssemblerUsage } from "./agents/assembler";
 import { createWorkflowMasterRouter, getLastWorkflowMasterUsage } from "./agents/workflowmaster";
 import { emptyUsage, type TokenUsage } from "./gateway";
 import { A2AClient } from "@a2a-js/sdk/client";
@@ -73,6 +74,7 @@ const AGENTS: AgentDef[] = [
   // Real ACP Claude agents — produce YAML validated by Zod
   { name: "WorkflowMaster", emoji: "🏃", skill: "orchestration", description: "Qualifies tasks, defines pipeline — YAML output" },
   { name: "Cipher", emoji: "🔍", skill: "analysis", description: "Codebase analysis — YAML output validated by Zod" },
+  { name: "Assembler", emoji: "⚙️", skill: "implementation", description: "Implementation — writes code, creates branches, opens PRs" },
   // Toy agents for testing
   { name: "Spark", emoji: "✨", skill: "brainstorm", description: "Creative visionary — generates wild ideas" },
   { name: "Flint", emoji: "🪨", skill: "validate", description: "Pragmatic builder — validates feasibility", requiresInput: true },
@@ -93,7 +95,7 @@ app.use(express.json());
 app.use(express.static(resolve(__dirname, "../public")));
 
 // Mount toy agents on their sub-paths (skip real ACP agents — they have their own routers)
-const REAL_AGENTS = new Set(["WorkflowMaster", "Cipher"]);
+const REAL_AGENTS = new Set(["WorkflowMaster", "Cipher", "Assembler"]);
 for (const def of AGENTS) {
   if (REAL_AGENTS.has(def.name)) continue; // mounted separately below
   const slug = def.name.toLowerCase();
@@ -105,6 +107,10 @@ for (const def of AGENTS) {
 // Mount Cipher (real ACP Claude agent)
 app.use("/cipher", createCipherRouter(BASE_URL));
 console.log(`[🤖] Mounted 🔐 Cipher → /cipher/ (ACP Claude)`);
+
+// Mount Assembler (real ACP agent — LLM + git operations)
+app.use("/assembler", createAssemblerRouter(BASE_URL));
+console.log(`[🤖] Mounted ⚙️ Assembler → /assembler/ (ACP + Git)`);
 
 // Mount WorkflowMaster (real ACP Claude agent)
 app.use("/workflowmaster", createWorkflowMasterRouter(BASE_URL));

@@ -132,3 +132,38 @@ export const CipherJsonSchema = {
   required: commonRequired,
   additionalProperties: false,
 };
+
+/**
+ * Assembler Phase 1 schema — code generation output.
+ * This is NOT the final YAML output (which is constructed by the executor).
+ * The LLM produces structured JSON with file contents, branch name, and commits.
+ */
+export const AssemblerCodeGenJsonSchema = {
+  type: "object",
+  properties: {
+    summary: { type: "string", description: "Brief summary of what was implemented" },
+    branch: { type: "string", description: "Branch name (e.g. feat/add-legal-pages)" },
+    files: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative file path from workspace root" },
+          action: { type: "string", enum: ["create", "modify", "delete"] },
+          content: { type: "string", description: "Complete file content (empty string for delete)" },
+        },
+        required: ["path", "action", "content"],
+        additionalProperties: false,
+      },
+      minItems: 1,
+    },
+    commits: {
+      type: "array",
+      items: { type: "string" },
+      minItems: 1,
+      description: "Conventional commit messages",
+    },
+  },
+  required: ["summary", "branch", "files", "commits"],
+  additionalProperties: false,
+};
