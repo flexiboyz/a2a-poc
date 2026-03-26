@@ -274,12 +274,28 @@ class MoodboardExecutor implements AgentExecutor {
         cumulativeUsage = accumulateUsage(cumulativeUsage, result.usage);
 
         try {
-          const cleaned = result.output.trim().startsWith("```")
-            ? result.output.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "")
-            : result.output;
-          moodboard = JSON.parse(cleaned);
+          let cleaned = result.output.trim();
+          // Strip markdown code fences
+          if (cleaned.startsWith("```")) {
+            cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "").trim();
+          }
+          // Try direct parse first
+          try {
+            moodboard = JSON.parse(cleaned);
+          } catch {
+            // Extract JSON object from text (find first { to last })
+            const firstBrace = cleaned.indexOf("{");
+            const lastBrace = cleaned.lastIndexOf("}");
+            if (firstBrace !== -1 && lastBrace > firstBrace) {
+              moodboard = JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+            } else {
+              throw new Error("No JSON found");
+            }
+          }
         } catch {
-          moodboard = { raw_analysis: result.output, error: "Could not parse structured output" };
+          // Return raw as-is — still useful for Prism
+          moodboard = { raw_analysis: result.output };
+          console.log(`[🎨 Moodboard] Could not parse JSON, returning raw analysis (${result.output.length} chars)`);
         }
 
         console.log(`[🎨 Moodboard] Vision analysis done (${result.usage.total_tokens} tokens)`);
