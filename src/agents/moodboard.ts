@@ -32,7 +32,7 @@ import { emptyUsage, accumulateUsage, type TokenUsage } from "../gateway.js";
 
 // ── Config ────────────────────────────────────────────────────────────────
 
-const VISION_MODEL = process.env["MODEL_MOODBOARD"] ?? "google/gemini-2.5-flash";
+const VISION_MODEL = process.env["MODEL_MOODBOARD"] ?? "anthropic/claude-sonnet-4-6";
 
 const MOODBOARD_ANALYSIS_PROMPT = `You are a design analyst. Analyze these inspiration images and produce a structured moodboard.
 
@@ -113,12 +113,18 @@ async function analyzeImagesWithVision(
   for (let i = 0; i < imageDataUrls.length; i++) {
     const dataUrl = imageDataUrls[i]!;
     if (dataUrl.startsWith("data:image/")) {
-      content.push({
-        type: "image_url",
-        image_url: { url: dataUrl },
-      });
+      // Extract mime type and base64 data
+      const mimeMatch = dataUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
+      if (mimeMatch) {
+        content.push({
+          type: "image_url",
+          image_url: { url: dataUrl },
+        });
+      }
     }
   }
+  
+  console.log(`[🎨 Moodboard] Sending ${imageDataUrls.length} images to ${VISION_MODEL} (content parts: ${content.length})`);
 
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
