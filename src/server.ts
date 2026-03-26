@@ -23,6 +23,8 @@ import type { AgentDef } from "./agents/create-agent";
 import { createCipherRouter, getLastCipherUsage } from "./agents/cipher";
 import { createAssemblerRouter, getLastAssemblerUsage } from "./agents/assembler";
 import { createSentinelRouter, getLastSentinelUsage } from "./agents/sentinel";
+import { createBastionRouter, getLastBastionUsage } from "./agents/bastion";
+import { createPrismRouter, getLastPrismUsage } from "./agents/prism";
 import { createWorkflowMasterRouter, getLastWorkflowMasterUsage } from "./agents/workflowmaster";
 import { emptyUsage, type TokenUsage } from "./gateway";
 import { A2AClient } from "@a2a-js/sdk/client";
@@ -77,6 +79,8 @@ const AGENTS: AgentDef[] = [
   { name: "Cipher", emoji: "🔍", skill: "analysis", description: "Codebase analysis — YAML output validated by Zod" },
   { name: "Assembler", emoji: "⚙️", skill: "implementation", description: "Implementation — writes code, creates branches, opens PRs" },
   { name: "Sentinel", emoji: "🛡️", skill: "review", description: "Code review — reviews PRs, approves/merges or requests changes" },
+  { name: "Bastion", emoji: "🏰", skill: "security", description: "Security audit — deep OWASP review, auth, injection, data leaks" },
+  { name: "Prism", emoji: "🌈", skill: "design", description: "UX design — mockups, component specs, user flows, image-gen prompts" },
   // Toy agents for testing
   { name: "Spark", emoji: "✨", skill: "brainstorm", description: "Creative visionary — generates wild ideas" },
   { name: "Flint", emoji: "🪨", skill: "validate", description: "Pragmatic builder — validates feasibility", requiresInput: true },
@@ -97,7 +101,7 @@ app.use(express.json());
 app.use(express.static(resolve(__dirname, "../public")));
 
 // Mount toy agents on their sub-paths (skip real ACP agents — they have their own routers)
-const REAL_AGENTS = new Set(["WorkflowMaster", "Cipher", "Assembler", "Sentinel"]);
+const REAL_AGENTS = new Set(["WorkflowMaster", "Cipher", "Assembler", "Sentinel", "Bastion", "Prism"]);
 for (const def of AGENTS) {
   if (REAL_AGENTS.has(def.name)) continue; // mounted separately below
   const slug = def.name.toLowerCase();
@@ -117,6 +121,14 @@ console.log(`[🤖] Mounted ⚙️ Assembler → /assembler/ (ACP + Git)`);
 // Mount Sentinel (real ACP agent — PR review + merge/request changes)
 app.use("/sentinel", createSentinelRouter(BASE_URL));
 console.log(`[🤖] Mounted 🛡️ Sentinel → /sentinel/ (ACP + Git)`);
+
+// Mount Bastion (security auditor — Opus 4.6)
+app.use("/bastion", createBastionRouter(BASE_URL));
+console.log(`[🤖] Mounted 🏰 Bastion → /bastion/ (Security Audit)`);
+
+// Mount Prism (UX designer — mockups + image-gen prompts)
+app.use("/prism", createPrismRouter(BASE_URL));
+console.log(`[🤖] Mounted 🌈 Prism → /prism/ (UX Design)`);
 
 // Mount WorkflowMaster (real ACP Claude agent)
 app.use("/workflowmaster", createWorkflowMasterRouter(BASE_URL));
@@ -263,6 +275,22 @@ app.get("/api/agents", (_req, res) => {
       cardUrl: `${BASE_URL}/${slug}/.well-known/agent-card.json`,
     };
   }));
+});
+
+// ── API: Projects ─────────────────────────────────────────────────────────
+
+import { readFileSync } from "fs";
+
+let _projectsCache: any[] | null = null;
+function getProjects(): any[] {
+  if (!_projectsCache) {
+    _projectsCache = JSON.parse(readFileSync(resolve(__dirname, "../data/projects.json"), "utf-8"));
+  }
+  return _projectsCache!;
+}
+
+app.get("/api/projects", (_req, res) => {
+  res.json(getProjects());
 });
 
 // ── API: Pipeline Templates ───────────────────────────────────────────────
@@ -692,9 +720,12 @@ async function executeAgent(
   const pipelineContext = buildPipelineContext(runId, stepOrder, input, totalSteps);
   const contextYaml = formatPipelineContextYaml(pipelineContext);
 
+  // Inject project registry so agents know workspace paths and repos
+  const projectsContext = `## Available Projects\n\`\`\`json\n${JSON.stringify(getProjects(), null, 2)}\n\`\`\`\n\n`;
+
   const chainedInput = stepOrder === 0
-    ? `## Topic\n${input}\n\nYou are the first agent in the pipeline (step 1/${totalSteps}).`
-    : `## Pipeline Context\n\`\`\`yaml\n${contextYaml}\`\`\`\n\n## Your Task\nBuild on previous agents' work. You are step ${stepOrder + 1}/${totalSteps}.`;
+    ? `${projectsContext}## Topic\n${input}\n\nYou are the first agent in the pipeline (step 1/${totalSteps}).`
+    : `${projectsContext}## Pipeline Context\n\`\`\`yaml\n${contextYaml}\`\`\`\n\n## Your Task\nBuild on previous agents' work. You are step ${stepOrder + 1}/${totalSteps}.`;
 
   // Discover & call agent via A2A
   const cardUrl = `${BASE_URL}/${slug}/.well-known/agent-card.json`;
