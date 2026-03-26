@@ -599,11 +599,18 @@
       }
       // Disable all buttons in the escalation/input prompt
       document.querySelectorAll('.input-prompt button').forEach(b => b.disabled = true);
-      await fetch(`${basePath}/api/runs/${runId}/reply`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reply }),
-      });
+      console.log(`[sendReply] runId=${runId}, reply length=${reply.length}, has images=${reply.includes('data:image/')}`);
+      try {
+        const res = await fetch(`${basePath}/api/runs/${runId}/reply`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reply }),
+        });
+        if (!res.ok) console.error('[sendReply] Error:', res.status, await res.text());
+      } catch (err) {
+        console.error('[sendReply] Failed:', err);
+        alert('Failed to send reply — check console');
+      }
     };
 
     window.removeStep = (i) => {
